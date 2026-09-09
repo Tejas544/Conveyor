@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shared JSON logging config for every service (ARCHITECTURE.md §11). Lives in
+  conveyor-common's jar; Spring Boot's LoggingSystem finds logback-spring.xml
+  on the classpath regardless of which jar it comes from, so no service
+  configures this individually. LogstashEncoder includes the full MDC map as
+  top-level JSON fields automatically — that is what makes traceId/sagaId/
+  orderId/eventType show up on every line without per-service code.
+-->
+<configuration>
+  <springProperty scope="context" name="serviceName" source="spring.application.name" defaultValue="unknown-service"/>
+
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <customFields>{"service":"${serviceName}"}</customFields>
+    </encoder>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="STDOUT"/>
+  </root>
+
+  <logger name="com.conveyor" level="INFO"/>
+</configuration>

@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.conveyor</groupId>
+    <artifactId>conveyor-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>conveyor-common</artifactId>
+  <packaging>jar</packaging>
+
+  <name>conveyor-common</name>
+  <description>
+    Shared library every service depends on: the message envelope, Kafka
+    producer/consumer factories with MDC propagation, the RFC 9457 error
+    handler, the ChaosGate no-op fault-injection bean (ARCHITECTURE.md §14),
+    and (as a test-jar) the base Testcontainers integration test classes.
+    No service-specific business logic lives here.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.conveyor</groupId>
+      <artifactId>conveyor-contracts</artifactId>
+    </dependency>
+    <dependency>
+      <!-- JSON structured logging (ARCHITECTURE.md §11) via a shared
+           logback-spring.xml (below), so no service configures this by hand. -->
+      <groupId>net.logstash.logback</groupId>
+      <artifactId>logstash-logback-encoder</artifactId>
+      <version>8.0</version>
+    </dependency>
+
+    <!-- Compile-scope on purpose: exposed transitively so every service's
+         own Testcontainers tests (via the test-jar below) can spin up the
+         same Postgres/Kafka images without redeclaring them. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+    </dependency>
+    <dependency>
+      <!-- ADR-2: real Apache Kafka, used only by the dedicated kafka-compat
+           CI job's test base class, never by the default local dev/test loop. -->
+      <groupId>org.testcontainers</groupId>
+      <artifactId>kafka</artifactId>
+    </dependency>
+    <dependency>
+      <!-- ADR-2: Redpanda is the default broker for the everyday test loop. -->
+      <groupId>org.testcontainers</groupId>
+      <artifactId>redpanda</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>mongodb</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Not a bootable app: plain library jar. -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <skip>true</skip>
+        </configuration>
+      </plugin>
+      <!-- Publish AbstractIntegrationTest etc. as a test-jar so every
+           service module can depend on conveyor-common with
+           <classifier>tests</classifier> instead of duplicating the
+           Testcontainers setup five times. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>test-jar</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
