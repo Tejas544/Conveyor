@@ -5,52 +5,48 @@ state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 1 — Repo scaffolding and the walking skeleton · In progress**
-(scaffolding complete and verified at the JVM level; one exit criterion
-blocked on a local Docker Desktop repair — see Blockers)
+**Phase 2 — Data layer, domain model and migrations · In progress**
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
   deployment) added same day at the human's explicit instruction and folded
   into `ARCHITECTURE.md` §3/§15 and `PLAN.md` Phases 14–15 before Phase 1
   began.
-
-## In Progress
-- Phase 1 scaffolding is **written and passing `mvn verify`**: Maven reactor
-  (parent + `conveyor-contracts` + `conveyor-common` + 5 services), envelope
-  (with a real UUIDv7 generator), `ChaosGate`/`ChaosAutoConfiguration`,
-  `ProblemDetailAdvice`, the envelope-MDC Kafka `RecordInterceptor`, shared
-  JSON logging, Spotless + Checkstyle wired into `verify`, 5 Dockerfiles,
+- Phase 1 — Repo scaffolding and the walking skeleton ✅ (2026-09-10). Maven
+  reactor (parent + `conveyor-contracts` + `conveyor-common` + 5 services),
+  envelope (real UUIDv7 generator), `ChaosGate`/`ChaosAutoConfiguration`,
+  `ProblemDetailAdvice`, envelope-MDC Kafka `RecordInterceptor`, shared JSON
+  logging, Spotless + Checkstyle wired into `verify`, 5 Dockerfiles,
   `docker-compose.yml`, Postgres multi-db init script, `.env.example`,
   `Makefile`, GitHub Actions `build.yml` (+ `kafka-compat` skeleton, Trivy,
-  gitleaks), `docs/adr/0001`–`0013`, `README.md` stub.
-- **Verified:** `./mvnw verify` green across all 7 modules, including a real
-  Testcontainers-backed Spring context-load test per service (Postgres +
-  Redpanda + Mongo) — this is the walking-skeleton claim, proven at the JVM
-  level. `docker compose build` also succeeded (all 5 images built, exit 0).
-- **Not yet verified this session:** `docker compose up` → all containers
-  healthy → each health endpoint returns `UP` (blocked, see below).
+  gitleaks), `docs/adr/0001`–`0013`, `README.md` stub. All exit criteria met:
+  `./mvnw verify` green across all 7 modules with real Testcontainers-backed
+  Spring context-load tests per service (Postgres + Redpanda + Mongo), and
+  (once BUG-0002 was resolved by the human's Docker Desktop repair)
+  `docker compose up -d --build` brought all 8 containers to `Healthy` with
+  all 5 `/actuator/health` endpoints returning `UP` — verified this session,
+  stack torn down afterward.
+
+## In Progress
+- Starting Phase 2 per `PLAN.md`: Flyway migrations per service (including
+  the oversell `CHECK` constraint and idempotency-key unique constraints),
+  `outbox`/`inbox` tables in all five service databases, JPA entities +
+  Spring Data repositories, MongoDB `$jsonSchema` validators on `catalog` and
+  `notifications`, seed data (~50 catalog SKUs, `ops`/`admin` users), and
+  per-service DB roles/grants including the verifier's read-only role.
 
 ## Blockers
-- **Local Docker Desktop is broken** (BUGS.md BUG-0002): its WSL2 backend is
-  stuck in a disk-provisioning restart loop
-  (`mkfs.ext4: No such device or address`) and stopped responding to the
-  Docker CLI/Testcontainers entirely, after the Phase 1 image build had
-  already completed successfully. Root-caused to WSL2/VHDX-level corruption
-  in Docker Desktop itself, unrelated to this repo. Fix identified
-  (`wsl --unregister docker-desktop[-data]` + relaunch) but **not applied** —
-  it would wipe all Docker state on the machine, for every project, and the
-  human chose to fix it themselves rather than have that done automatically.
-  **Unblocks when:** the human repairs Docker Desktop; then re-run
-  `docker compose up -d --build` and confirm all 5 health endpoints return
-  `UP` to close out Phase 1's remaining exit criterion.
+- None.
 
 ## Next Steps
-1. Once Docker is repaired: `docker compose up -d --build`, confirm all
-   containers healthy, `curl` each of the 5 health endpoints (see README).
-2. Mark Phase 1 complete in this file once that's done.
-3. Begin Phase 2 — data layer (Flyway migrations, JPA entities, Mongo
-   validators, seed data) per `PLAN.md`.
+1. Design the per-service schemas (tables, indexes, constraints) matching
+   `ARCHITECTURE.md` §5.
+2. Write Flyway `V1__baseline.sql` migrations per service.
+3. Add JPA entities/repositories and Mongo validators; wire seed data and
+   `make seed`.
+4. Write the Phase 2 exit-criterion tests (Flyway-to-head, repository CRUD,
+   oversell constraint, Mongo validator rejection, verifier role privilege
+   test) and get them green before marking Phase 2 complete.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile

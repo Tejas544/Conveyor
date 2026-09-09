@@ -63,9 +63,16 @@ Format for each entry:
   integration test for **all five services** against real Postgres/Redpanda/
   Mongo) passed in full *before* the daemon wedged, so the walking-skeleton
   claim is verified at the JVM/test level. The `docker compose up` → all
-  containers healthy → `curl` each health endpoint exit criterion is
+  containers healthy → `curl` each health endpoint exit criterion was
   **unverified this session**, blocked on the Docker fix above.
-- **Status:** Open — blocked on the human's Docker Desktop repair.
+- **Resolution (2026-09-10):** the human repaired Docker Desktop. Re-ran
+  `docker compose up -d --build`: all 5 service images built, all 8 containers
+  (5 services + Postgres + Mongo + Redpanda) reached `Healthy`, and `curl` on
+  all 5 `/actuator/health` endpoints (8081–8085) returned
+  `{"status":"UP","groups":["liveness","readiness"]}`. Stack torn down after
+  verification with `docker compose down`. Phase 1's last remaining exit
+  criterion is now met.
+- **Status:** Fixed.
 
 ---
 
