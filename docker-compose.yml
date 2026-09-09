@@ -1,0 +1,178 @@
+name: conveyor
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks: [conveyor]
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:-postgres_local_dev_only}
+      ORDER_DB_NAME: ${ORDER_DB_NAME:-order_service}
+      ORDER_DB_USER: ${ORDER_DB_USER:-order_service}
+      ORDER_DB_PASSWORD: ${ORDER_DB_PASSWORD:-order_service_local_dev_only}
+      INVENTORY_DB_NAME: ${INVENTORY_DB_NAME:-inventory_service}
+      INVENTORY_DB_USER: ${INVENTORY_DB_USER:-inventory_service}
+      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD:-inventory_service_local_dev_only}
+      PAYMENT_DB_NAME: ${PAYMENT_DB_NAME:-payment_service}
+      PAYMENT_DB_USER: ${PAYMENT_DB_USER:-payment_service}
+      PAYMENT_DB_PASSWORD: ${PAYMENT_DB_PASSWORD:-payment_service_local_dev_only}
+      SAGA_DB_NAME: ${SAGA_DB_NAME:-saga_orchestrator}
+      SAGA_DB_USER: ${SAGA_DB_USER:-saga_orchestrator}
+      SAGA_DB_PASSWORD: ${SAGA_DB_PASSWORD:-saga_orchestrator_local_dev_only}
+      DISPATCH_DB_NAME: ${DISPATCH_DB_NAME:-dispatch_service}
+      DISPATCH_DB_USER: ${DISPATCH_DB_USER:-dispatch_service}
+      DISPATCH_DB_PASSWORD: ${DISPATCH_DB_PASSWORD:-dispatch_service_local_dev_only}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init-service-databases.sh:/docker-entrypoint-initdb.d/init-service-databases.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    <<: *service-defaults
+
+  mongo:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-conveyor}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-mongo_local_dev_only}
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    <<: *service-defaults
+
+  redpanda:
+    # ADR-2: Redpanda is the default local broker; Apache Kafka is exercised
+    # separately by the kafka-compat CI job, never by the everyday dev loop.
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports:
+      - "19092:19092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    <<: *service-defaults
+
+  order-service:
+    build:
+      context: .
+      dockerfile: order-service/Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_NAME: ${ORDER_DB_NAME:-order_service}
+      DB_USERNAME: ${ORDER_DB_USER:-order_service}
+      DB_PASSWORD: ${ORDER_DB_PASSWORD:-order_service_local_dev_only}
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    <<: *service-defaults
+
+  inventory-service:
+    build:
+      context: .
+      dockerfile: inventory-service/Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_NAME: ${INVENTORY_DB_NAME:-inventory_service}
+      DB_USERNAME: ${INVENTORY_DB_USER:-inventory_service}
+      DB_PASSWORD: ${INVENTORY_DB_PASSWORD:-inventory_service_local_dev_only}
+      MONGO_URI: mongodb://${MONGO_INITDB_ROOT_USERNAME:-conveyor}:${MONGO_INITDB_ROOT_PASSWORD:-mongo_local_dev_only}@mongo:27017/inventory_service?authSource=admin
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mongo: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    <<: *service-defaults
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: payment-service/Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_NAME: ${PAYMENT_DB_NAME:-payment_service}
+      DB_USERNAME: ${PAYMENT_DB_USER:-payment_service}
+      DB_PASSWORD: ${PAYMENT_DB_PASSWORD:-payment_service_local_dev_only}
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    <<: *service-defaults
+
+  saga-orchestrator:
+    build:
+      context: .
+      dockerfile: saga-orchestrator/Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_NAME: ${SAGA_DB_NAME:-saga_orchestrator}
+      DB_USERNAME: ${SAGA_DB_USER:-saga_orchestrator}
+      DB_PASSWORD: ${SAGA_DB_PASSWORD:-saga_orchestrator_local_dev_only}
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    <<: *service-defaults
+
+  dispatch-service:
+    build:
+      context: .
+      dockerfile: dispatch-service/Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_NAME: ${DISPATCH_DB_NAME:-dispatch_service}
+      DB_USERNAME: ${DISPATCH_DB_USER:-dispatch_service}
+      DB_PASSWORD: ${DISPATCH_DB_PASSWORD:-dispatch_service_local_dev_only}
+      MONGO_URI: mongodb://${MONGO_INITDB_ROOT_USERNAME:-conveyor}:${MONGO_INITDB_ROOT_PASSWORD:-mongo_local_dev_only}@mongo:27017/dispatch_service?authSource=admin
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    ports:
+      - "8085:8085"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mongo: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    <<: *service-defaults
+
+  # Prometheus/Grafana/Jaeger arrive in Phase 9 (ARCHITECTURE.md §11) behind a
+  # `--profile observability` flag, once there is something real to wire them
+  # to. Deliberately not stubbed out here — see CLAUDE.md's rule against
+  # half-finished implementations.
+
+networks:
+  conveyor: {}
+
+volumes:
+  postgres-data: {}
+  mongo-data: {}
