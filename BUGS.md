@@ -66,12 +66,12 @@ Format for each entry:
   containers healthy → `curl` each health endpoint exit criterion was
   **unverified this session**, blocked on the Docker fix above.
 - **Resolution (2026-09-10):** the human repaired Docker Desktop. Re-ran
-  `docker compose up -d --build`: all 5 service images built, all 8 containers
-  (5 services + Postgres + Mongo + Redpanda) reached `Healthy`, and `curl` on
-  all 5 `/actuator/health` endpoints (8081–8085) returned
-  `{"status":"UP","groups":["liveness","readiness"]}`. Stack torn down after
-  verification with `docker compose down`. Phase 1's last remaining exit
-  criterion is now met.
+  `docker compose up -d --build`: all 5 images built clean, all 8 containers
+  (5 services + Postgres + Mongo + Redpanda) reached `Healthy`, and `curl`
+  against all 5 `/actuator/health` endpoints (8081–8085) returned
+  `{"status":"UP","groups":["liveness","readiness"]}`. Stack torn down with
+  `docker compose down` after verification. Phase 1's last remaining exit
+  criterion is now genuinely met.
 - **Status:** Fixed.
 
 ---
