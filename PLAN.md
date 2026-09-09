@@ -1,0 +1,716 @@
+# PLAN.md — Conveyor build plan
+
+**Version:** 1.0 (Phase 0) · **Date:** 2026-09-09 · **Status:** awaiting sign-off
+
+17 phases, 0–16, in five stages. Every phase states its **goal**,
+**deliverables**, **dependencies**, and **exit criteria** — and every exit
+criterion names the test that has to be green. Per `CLAUDE.md` §2.4 each phase
+ends with a checkpoint: a summary of what changed, then a stop.
+
+Per `CLAUDE.md` §2.3, **every phase ends in something runnable.** Where a phase
+builds a service whose collaborators do not exist yet, it is exercised by
+integration tests that drive it directly (a test producer sends the command, the
+test asserts the reply on the topic) — never by leaving it half-wired.
+
+**Size** is relative effort, not a schedule: **S** ≈ one focused session,
+**M** ≈ two to three, **L** ≈ several. Sizes are estimates and will be corrected
+in `CONTEXT.md` as they prove wrong.
+
+---
+
+## Stage map
+
+| Stage | Phases | Theme |
+|---|---|---|
+| **A — Foundations** | 0–2 | Plan, scaffold, data layer. Nothing interesting works yet; everything runs. |
+| **B — The system** | 3–7 | The five services and the saga. Ends with a working end-to-end order. |
+| **C — The experience** | 8–9 | Dashboard and observability. Ends with a demo you would show someone. |
+| **D — The rigor** | 10–12 | Invariant checker, chaos matrix, load test. Ends with numbers in `RESULTS.md`. |
+| **E — Ship** | 13–16 | Kubernetes, CI/CD, AWS, autoscaling, docs. Ends with the Definition of Done met. |
+
+```mermaid
+flowchart LR
+    P0[0 Plan] --> P1[1 Scaffold] --> P2[2 Data layer]
+    P2 --> P3[3 Order svc] --> P4[4 Inventory] --> P5[5 Payment] --> P6[6 Orchestrator] --> P7[7 Dispatch + E2E]
+    P7 --> P8[8 Dashboard] --> P9[9 Observability]
+    P9 --> P10[10 Invariant checker] --> P11[11 Chaos matrix] --> P12[12 Load test]
+    P12 --> P13[13 K8s local] --> P14[14 CI/CD + EKS] --> P15[15 Autoscaling] --> P16[16 Docs + demo]
+    P9 -.-> P13
+```
+
+Phases 4 and 5 are independent of each other and could be reordered or
+parallelised; everything else is a hard chain.
+
+---
+
+# Stage A — Foundations
+
+## Phase 0 — Planning · **S** · *(in progress)*
+
+**Goal.** Freeze the requirements, settle the architecture, resolve the six open
+decisions, and produce a plan the human can sign off.
+
+**Deliverables.** `PROJECT_BRIEF.md` · `ARCHITECTURE.md` · `PLAN.md` · updated
+`CONTEXT.md`.
+
+**Dependencies.** None.
+
+**Exit criteria.**
+- [ ] All four documents exist and are internally consistent.
+- [ ] All six OPEN decisions have a recommendation with reasoning and a stated
+      alternative in `ARCHITECTURE.md` §3.
+- [ ] The five-services-not-four consequence of ADR-1 is flagged explicitly.
+- [ ] Cost exposure named before any AWS resource is proposed (§15.3).
+- [ ] **Human sign-off received.** No implementation code before this.
+
+---
+
+## Phase 1 — Repo scaffolding and the walking skeleton · **M**
+
+**Goal.** `git clone && docker compose up` gives five healthy services, a
+broker, two databases, and a green `mvn verify`. No business logic.
+
+**Deliverables.**
+- Maven multi-module reactor: parent POM, `conveyor-contracts`,
+  `conveyor-common`, five service modules. Java 21, Spring Boot 3.5.x pinned.
+- `conveyor-common`: JSON envelope types, Kafka producer/consumer factories,
+  MDC-populating Kafka interceptor, RFC 9457 exception handler, `ChaosGate`
+  no-op bean, base Testcontainers test classes.
+- Per service: `/actuator/health` (liveness + readiness probe groups), OpenAPI
+  at `/v3/api-docs`, JSON structured logging, a multi-stage `Dockerfile`
+  (`eclipse-temurin:21-jre-alpine`, non-root, layered jar).
+- `docker-compose.yml` (+ `--profile observability`), `.env.example`, `Makefile`
+  (`up`, `down`, `test`, `logs`, `seed`, `reset`).
+- GitHub Actions: `build.yml` (compile → unit tests → integration tests →
+  Trivy scan), plus the `kafka-compat` job skeleton from ADR-2.
+- `docs/adr/` populated from `ARCHITECTURE.md` §3. `README.md` stub.
+- `.gitignore`, `.editorconfig`, Spotless + Checkstyle enforced in CI.
+
+**Dependencies.** Phase 0 sign-off.
+
+**Exit criteria.**
+- [ ] `docker compose up` → all containers healthy; `curl` each service's health
+      endpoint returns `UP`.
+- [ ] `mvn verify` green from a clean `~/.m2`.
+- [ ] **Test:** one Spring context-load test per service, each booting against
+      real Postgres/Mongo/Redpanda via Testcontainers.
+- [ ] **Test:** a round-trip serialization test proving an envelope produced by
+      `conveyor-common` is consumed and deserialized identically.
+- [ ] CI green on a pull request, including Spotless and Trivy.
+- [ ] No secret literals anywhere (verified by a `gitleaks` CI step).
+
+---
+
+## Phase 2 — Data layer, domain model and migrations · **M**
+
+**Goal.** Every table, collection, index and constraint from
+`ARCHITECTURE.md` §5 exists, is migrated by Flyway, and is exercised by
+repository tests. Includes the constraints that make bugs impossible rather
+than merely detectable.
+
+**Deliverables.**
+- Flyway migrations per service (`V1__baseline.sql`), including
+  `check (on_hand - reserved >= 0)`, the unique constraints on
+  `reservations(order_id, sku)` and `payment_attempts(idempotency_key)`, and
+  every index the query patterns in §10 need.
+- `outbox` / `inbox` tables in all five service databases.
+- JPA entities + Spring Data repositories; MongoDB documents with
+  `$jsonSchema` validators on `catalog` and `notifications`.
+- Seed data: ~50 catalog SKUs with stock, plus `users` with an `ops` and an
+  `admin` account (passwords from env, never literals). `make seed`.
+- Per-service database roles and grants, plus the verifier's read-only role.
+
+**Dependencies.** Phase 1.
+
+**Exit criteria.**
+- [ ] **Test:** Flyway migrates a clean database to head for every service
+      (Testcontainers), and `flyway validate` passes — no checksum drift.
+- [ ] **Test:** repository integration tests cover CRUD on every aggregate.
+- [ ] **Test:** the oversell constraint is proven — an `UPDATE` driving
+      `reserved` past `on_hand` raises a constraint violation.
+- [ ] **Test:** Mongo schema validators reject a document missing a required
+      field.
+- [ ] **Test:** the verifier role can `SELECT` across schemas and **cannot**
+      `INSERT`/`UPDATE`/`DELETE`.
+- [ ] `make seed && make reset` are idempotent.
+
+---
+
+# Stage B — The system
+
+## Phase 3 — Order Service: REST, aggregate, outbox · **M**
+
+**Goal.** A customer can place an order over REST; it is durably stored and
+`OrderPlaced` reaches Kafka — atomically with respect to crashes.
+
+**Deliverables.**
+- `POST /orders` with Bean Validation and `Idempotency-Key` support;
+  `GET /orders/{id}`, `GET /orders`, `GET /orders/summary`.
+- Order aggregate + state machine with **guarded transitions** — an illegal
+  transition throws rather than silently writing.
+- Transactional outbox writer + polling publisher (`SKIP LOCKED`, batched)
+  in `conveyor-common`, used here first.
+- Consumers projecting saga replies onto `orders.status` (harmless no-ops until
+  Phase 6 produces those events).
+- OpenAPI complete; RFC 9457 errors with `traceId`.
+
+**Dependencies.** Phase 2.
+
+**Exit criteria.**
+- [ ] **Test:** unit tests for the state machine including every rejected
+      transition.
+- [ ] **Test:** `POST /orders` → row in `orders` **and** `OrderPlaced` observed
+      on `conveyor.order.events.v1` with the correct envelope (Testcontainers).
+- [ ] **Test — the important one:** *outbox crash safety.* The publisher is
+      killed between DB commit and publish; on restart the event is published,
+      exactly once, and the consumer sees one message.
+- [ ] **Test:** the same `Idempotency-Key` twice → one order, `200` with the
+      original body on the second call.
+- [ ] **Test:** contract test — `OrderPlaced` validates against its JSON Schema.
+- [ ] `docker compose up` still fully healthy.
+
+---
+
+## Phase 4 — Inventory Service · **M**
+
+**Goal.** Stock can be reserved and released, correctly under concurrency, and
+idempotently under redelivery. Catalog reads work.
+
+**Deliverables.**
+- Consumers for `ReserveInventory` / `ReleaseInventory` with inbox dedup, each
+  in one transaction with the business write and the outbox insert.
+- Reservation via ADR-9's guarded conditional `UPDATE`; partial-reservation
+  handling (all-or-nothing per order — a multi-SKU order reserves every line or
+  none, inside one transaction).
+- Replies: `InventoryReserved`, `InventoryReservationFailed` (with per-SKU
+  shortfalls), `InventoryReleased`.
+- REST: `GET /inventory`, `GET /inventory/{sku}`, `POST /inventory/{sku}/adjust`
+  (audited), `GET /inventory/{sku}/reservations`, catalog endpoints reading
+  Mongo.
+
+**Dependencies.** Phase 2. (Independent of Phases 3 and 5.)
+
+**Exit criteria.**
+- [ ] **Test — the important one:** *concurrency.* 50 threads reserve the last
+      unit of a SKU simultaneously; exactly 1 succeeds, 49 get
+      `INSUFFICIENT_STOCK`, and `reserved` ends at exactly 1. Run 20 times to
+      rule out a lucky pass.
+- [ ] **Test:** *idempotency.* The same `ReserveInventory` delivered 3× produces
+      one reservation and 3 identical replies; `conveyor_inbox_duplicates_total`
+      increments by 2.
+- [ ] **Test:** reserve → release restores `reserved` to its exact prior value.
+- [ ] **Test:** a multi-SKU order where one SKU is short reserves **nothing**.
+- [ ] **Test:** `ReleaseInventory` for an unknown reservation is a no-op success,
+      not an error (compensations must be safe to replay).
+- [ ] **Test:** contract tests for all three reply events.
+- [ ] **Test:** `POST /adjust` writes `stock_adjustments` and requires `ADMIN`.
+
+---
+
+## Phase 5 — Payment Service · **S/M**
+
+**Goal.** Charges and refunds, idempotent, with a mock gateway that can be told
+to fail in specific ways — the substrate the chaos phase needs.
+
+**Deliverables.**
+- Consumers for `ChargePayment` / `RefundPayment` with inbox dedup.
+- Mock gateway: configurable latency distribution, decline rate, error rate,
+  timeout injection. Deterministic under a seed so a failing case is
+  reproducible — the Anvil habit, applied where it is cheap.
+- Idempotency on `payment_attempts.idempotency_key`; a replayed charge re-emits
+  the **original** reply rather than re-charging.
+- `GET /payments/{orderId}`; `POST /test/failure-mode` under the `chaos` profile
+  only, with a startup guard refusing the `prod` profile.
+
+**Dependencies.** Phase 2.
+
+**Exit criteria.**
+- [ ] **Test — the important one:** *no double charge.* The same
+      `ChargePayment` delivered 5× (concurrently) → exactly one `payments` row
+      in `CAPTURED`, five identical `PaymentCharged` replies.
+- [ ] **Test:** refund is idempotent; refunding a non-existent payment fails
+      loudly rather than silently succeeding.
+- [ ] **Test:** each failure mode (`DECLINE`, `TIMEOUT`, `GATEWAY_ERROR`)
+      produces the right `PaymentFailed.reason` and `retryable` flag.
+- [ ] **Test:** the same seed produces the same gateway outcome sequence.
+- [ ] **Test:** the app **fails to start** with `chaos` + `prod` profiles both
+      active.
+- [ ] **Test:** contract tests for all three reply events.
+
+---
+
+## Phase 6 — Saga Orchestrator · **L** — *the centrepiece*
+
+**Goal.** The saga runs: forward path, every compensation path, timeouts, and
+recovery after a crash.
+
+**Deliverables.**
+- Saga definition DSL (a step list with forward command, compensating command,
+  timeout, retry policy) — order fulfillment is one definition, so the engine is
+  a real engine rather than a hardcoded flow.
+- `saga_instances` / `saga_steps` persistence; append-only step log.
+- Command dispatch via outbox; reply handling via inbox; per-order partition
+  ordering relied on and documented.
+- Timeout sweep every 5 s with `FOR UPDATE SKIP LOCKED`, multi-replica safe.
+- Compensation derived from the **applied** forward steps in the log, never from
+  a hardcoded list.
+- `NEEDS_INTERVENTION` terminal state, retry endpoint, alert metric.
+- REST: `GET /sagas/{orderId}`, `GET /sagas?state=&stuck=true`,
+  `POST /sagas/{id}/retry`.
+- Metrics from `ARCHITECTURE.md` §11.
+
+**Dependencies.** Phases 3, 4, 5.
+
+**Exit criteria.**
+- [ ] **Test:** E2E happy path — `POST /orders` → `orders.status = CONFIRMED`,
+      reservation `COMMITTED`, payment `CAPTURED`, saga `COMPLETED`, step log
+      exactly as specified.
+- [ ] **Test:** E2E compensation — *inventory fails* → saga `ABORTED`, order
+      `CANCELLED`, no payment attempted, stock unchanged.
+- [ ] **Test:** E2E compensation — *payment declines* → inventory released,
+      stock restored to its exact prior value, order `CANCELLED`.
+- [ ] **Test:** E2E compensation — *payment succeeds then the saga aborts* →
+      refund **and** release, both observed, order `CANCELLED`.
+- [ ] **Test:** *forward timeout.* Inventory never replies → after 30 s the saga
+      compensates and terminates.
+- [ ] **Test:** *compensation timeout.* Release keeps failing → retried with
+      backoff → `NEEDS_INTERVENTION`, metric incremented, not silently aborted.
+- [ ] **Test — the important one:** *orchestrator crash recovery.* Killed
+      between reply and state write; on restart the saga reaches a correct
+      terminal state. Asserted for a crash at **each** state in §7.2.
+- [ ] **Test:** two orchestrator replicas run concurrently against the same
+      saga backlog; no saga is double-driven (no duplicate commands in the
+      outbox).
+- [ ] **Test:** duplicate reply delivery does not advance the saga twice.
+- [ ] `docker compose up` → a manually placed order reaches `CONFIRMED`.
+
+---
+
+## Phase 7 — Dispatch/Notification Service and full-pipeline E2E · **S/M**
+
+**Goal.** Close the loop. The pipeline runs end to end and is covered by an
+automated suite that will be the regression net for everything after.
+
+**Deliverables.**
+- `OrderConfirmed` consumer → `shipments` (Postgres) + `notifications` (Mongo),
+  in one inbox-guarded unit of work per store, with the Mongo write retried
+  independently (it is a retriable post-pivot step, not compensatable).
+- `ShipmentCreated` published.
+- `GET /shipments/{orderId}`, `GET /notifications?orderId=`.
+- An `e2e` Maven module: whole stack via Testcontainers Compose, driving the
+  public REST API only.
+
+**Dependencies.** Phase 6.
+
+**Exit criteria.**
+- [ ] **Test:** full E2E — REST call → shipment row → notification document →
+      `ShipmentCreated` on the topic.
+- [ ] **Test:** dispatch is idempotent — redelivered `OrderConfirmed` → one
+      shipment, one notification.
+- [ ] **Test:** dispatch failing repeatedly does **not** cancel the order (the
+      pivot rule holds); it retries and DLQs, and the order stays `CONFIRMED`.
+- [ ] **Test:** the E2E suite covers happy path + all three compensation paths
+      and runs in CI.
+- [ ] **The Definition-of-Done line "full happy-path order flow works end to
+      end" is now true**, minus the dashboard.
+
+---
+
+# Stage C — The experience
+
+## Phase 8 — Live ops dashboard · **L**
+
+**Goal.** The demo. Place an order in one tab and watch the pipeline move in
+real time in another.
+
+**Deliverables.**
+- Vite + React 19 + strict TS + Tailwind + shadcn/ui. TS API types generated
+  from the OpenAPI specs so a backend change breaks the frontend build.
+- **Kanban board** by order state, columns live-updating via SSE, with
+  transition animation (an order visibly moving column to column is the demo).
+- **Per-order timeline** — the `saga_steps` log rendered as a vertical timeline,
+  compensation steps visually distinct from forward steps.
+- `useSagaStream` hook: `fetch` + `ReadableStream` SSE client per ADR-5, with
+  `Last-Event-ID` resume, exponential-backoff reconnect, and a visible
+  connection-state indicator.
+- **Admin inventory panel:** stock table with low-stock highlighting, adjust
+  dialog (ADMIN only), reservation drill-down.
+- Login screen, token refresh, role-gated UI.
+- An order-placement form for demoing, including a "make this one fail" control
+  that drives payment's failure mode.
+
+**Dependencies.** Phase 7. (Phase 9 may be interleaved.)
+
+**Exit criteria.**
+- [ ] **Test (RTL):** kanban renders and moves a card on an SSE event.
+- [ ] **Test (RTL):** the SSE hook reconnects after a dropped stream and resumes
+      from `Last-Event-ID` without duplicating or losing events.
+- [ ] **Test (RTL):** admin controls are absent for an `OPS` token and present
+      for `ADMIN`.
+- [ ] **Test (Playwright):** login → place order → the card reaches `CONFIRMED`
+      live, no page reload.
+- [ ] **Test (Playwright):** a forced payment failure shows the compensation
+      steps on the timeline and the order ends `CANCELLED`.
+- [ ] `tsc --noEmit` clean under `strict` + `noUncheckedIndexedAccess`.
+- [ ] Keyboard-navigable; axe reports no critical violations.
+- [ ] Manual check at 1440p and 1024px — this is a demo artifact.
+
+---
+
+## Phase 9 — Observability · **M**
+
+**Goal.** Make the next three phases interpretable. One order = one trace across
+five services.
+
+**Deliverables.**
+- OpenTelemetry Java agent on every service; **W3C trace context propagated
+  through Kafka headers**, produce and consume spans linked.
+- Micrometer + `/actuator/prometheus`; every metric in `ARCHITECTURE.md` §11
+  implemented and asserted.
+- Compose `observability` profile: Prometheus, Grafana, Jaeger/Tempo.
+- Grafana dashboards, committed as JSON: *Saga Health* (throughput, duration
+  percentiles, terminal outcomes, compensation rate), *Pipeline Latency*
+  (per-step), *Infrastructure* (outbox lag, DLQ depth, consumer lag, JVM).
+- MDC enrichment verified end to end.
+- Alert rules: any invariant violation, `NEEDS_INTERVENTION > 0`, outbox lag
+  > 60 s, DLQ non-empty.
+
+**Dependencies.** Phase 7.
+
+**Exit criteria.**
+- [ ] **Test:** an integration test asserts a single `traceId` appears in spans
+      from all five services for one order — trace propagation is *tested*, not
+      eyeballed.
+- [ ] **Test:** each custom metric is asserted present with correct labels after
+      driving a saga.
+- [ ] **Artifact:** a screenshot of one order's full distributed trace, in
+      `docs/`.
+- [ ] Every log line during an E2E run carries `traceId`, `sagaId`, `orderId`.
+- [ ] Grafana dashboards populate against a local load run.
+
+---
+
+# Stage D — The rigor
+
+> These three phases are the project's answer to Anvil. They are scheduled here
+> as first-class work with their own exit criteria, per `CLAUDE.md` §2.12.
+
+## Phase 10 — `conveyor-verifier`: the invariant checker · **M**
+
+**Goal.** Correctness as a *measured* property, with a checker whose own
+correctness is established rather than assumed.
+
+**Deliverables.**
+- `conveyor-verifier` service: read-only DB role, evaluates the full catalogue
+  every 10 s, exports `conveyor_invariant_violations_total{invariant}`, writes
+  a violation report (invariant, offending IDs, timestamp) to a file and to
+  stdout as structured JSON.
+- Both checking modes, per §13: **inside-out** (direct DB reads) and
+  **outside-in** (REST only), with the coverage difference measured — how many
+  seeded violations each mode catches. That delta *is* the argument for
+  inside-out checking, quantified.
+- `docs/INVARIANTS.md` — the numbered catalogue graduating out of
+  `ARCHITECTURE.md`.
+- **A seeded-violation harness**: for each invariant, code that constructs a
+  database state violating exactly that invariant.
+- Deployment: a sidecar/`CronJob` locally and in K8s. `make verify` for a
+  one-shot run that exits non-zero on violation, wired into the E2E CI job.
+
+**Dependencies.** Phase 9.
+
+**Exit criteria.**
+- [ ] All 15 invariants implemented.
+- [ ] **Test — soundness (negative control):** for every invariant, the seeded
+      violating state is flagged, with the correct invariant ID. Any invariant
+      that cannot be violated by construction is **named with a written
+      argument**, not counted as a pass.
+- [ ] **Test — precision:** ≥500 clean states (generated by running real sagas)
+      produce **zero** violations. A checker that cries wolf is worse than none.
+- [ ] **Measured:** inside-out vs. outside-in detection counts recorded in
+      `RESULTS.md`, with the specific invariants outside-in structurally cannot
+      see.
+- [ ] Runs continuously under `docker compose up`; zero violations on a clean
+      system for a 30-minute soak.
+- [ ] `make verify` exits non-zero on a seeded violation (so CI can gate on it).
+
+---
+
+## Phase 11 — Chaos matrix · **L**
+
+**Goal.** A number, with error bars and a triaged failure list — not an
+anecdote.
+
+**Deliverables.**
+- `ChaosGate` injection points implemented at every site in
+  `ARCHITECTURE.md` §14, `chaos`-profile-gated with the prod startup guard.
+- `chaos/run-matrix.sh` (or a small Java/Python harness): for each trial —
+  reset to a known state → place an order → arm the injection → kill or delay →
+  wait for convergence (bounded) → run the **full** invariant catalogue →
+  record outcome + the `saga_steps` log + the trial's seed.
+- Matrix: *(7 injection points × {crash, 5 s delay})* × ≥4 repetitions
+  = **≥56 trials**, plus an unarmed control arm.
+- Additionally: broker-level faults (Kafka paused mid-saga; a partition made
+  unavailable) and a database-unavailable trial.
+- `RESULTS.md`: methodology, trial table, compensation-correctness rate per
+  injection point, convergence-time distribution, and every non-clean trial
+  written up.
+
+**Dependencies.** Phase 10 (the checker is the oracle; without it there is
+nothing to score against).
+
+**Exit criteria.**
+- [ ] ≥50 trials executed and recorded, reproducible from a recorded seed.
+- [ ] **Control arm:** unarmed trials show 100 % clean. If a control trial fails,
+      the harness is wrong and the matrix is void — checked before reporting.
+- [ ] Compensation-correctness rate reported **per injection point**, not just
+      as one aggregate (an aggregate can hide a single systematically broken
+      path).
+- [ ] Every non-clean trial has a `BUGS.md` entry with the saga ID and step log,
+      root-caused or explicitly marked Open with the next measurement to take.
+- [ ] The `payment.after-commit-before-publish` point — money moved, nobody told
+      — is specifically covered, since it is the most dangerous.
+- [ ] `RESULTS.md` states the methodology precisely enough for someone else to
+      re-run it.
+- [ ] **If the rate is not 100 %, it is reported as-is with root causes.** Per
+      the brief: that is a finding, not a failure.
+
+---
+
+## Phase 12 — Load test · **M**
+
+**Goal.** Honest throughput and latency numbers, with the bottleneck identified.
+
+**Deliverables.**
+- k6 scenarios: smoke, ramp-to-find-the-knee, sustained soak (30 min), spike.
+  Thresholds set on p99 and error rate so a run passes or fails rather than
+  merely producing a chart.
+- Custom metric: **end-to-end saga completion latency**, measured from HTTP 202
+  to `CONFIRMED` (polling the SSE stream), which is the number that actually
+  matters and is not the HTTP response time.
+- Bottleneck analysis using Phase 9's traces: which step dominates p99, and why.
+- `RESULTS.md`: throughput vs. concurrency, p50/p95/p99 (both HTTP and
+  end-to-end), error rate, resource usage, the knee, and the identified
+  bottleneck.
+
+**Dependencies.** Phase 9 (interpretation), Phase 11 (a system known to be
+correct — measuring the throughput of a system that loses orders is meaningless).
+
+**Exit criteria.**
+- [ ] Sustained-load run at the identified knee for ≥30 min with zero invariant
+      violations (the checker runs throughout) and zero lost orders.
+- [ ] Numbers recorded with the hardware and configuration they were measured
+      on. A number without its conditions is not a result.
+- [ ] The bottleneck is **named and evidenced** by a trace, not guessed.
+- [ ] **Regressions reported.** If throughput improves and p99 worsens, both are
+      stated — per the EdgeRAG brief's rule that reporting a regression
+      unprompted is the maturity signal.
+- [ ] k6 scripts committed and runnable via `make load`.
+
+---
+
+# Stage E — Ship
+
+## Phase 13 — Containerization and Kubernetes (local) · **M**
+
+**Goal.** The whole system on Kubernetes locally — free — so the paid EKS window
+is short and low-risk.
+
+**Deliverables.**
+- Hardened Dockerfiles: layered jars, distroless or alpine JRE, non-root,
+  read-only rootfs, pinned base digests, `HEALTHCHECK`.
+- Helm chart (one chart, per-service subcharts or a values-driven template) with
+  **resource requests and limits on every deployment** (`CLAUDE.md` §7 — required
+  for the autoscaling measurement to mean anything), liveness/readiness/startup
+  probes, `PodDisruptionBudget`, `HorizontalPodAutoscaler` definitions.
+- Strimzi Kafka, Postgres and Mongo for the local cluster; ConfigMaps/Secrets;
+  `NetworkPolicy` restricting each service to its own datastore.
+- `kind`/`k3d` bring-up script + metrics-server.
+- **HPA dry run on kind**: the Phase 15 method rehearsed locally so the EKS
+  session is execution, not debugging.
+
+**Dependencies.** Phase 12.
+
+**Exit criteria.**
+- [ ] `make kind-up && helm install` → all pods `Ready`, no `CrashLoopBackOff`.
+- [ ] **Test:** the full E2E suite passes against the kind cluster, not just
+      compose.
+- [ ] **Test:** `kubectl delete pod` on each service in turn → the system
+      self-heals and the invariant checker stays clean.
+- [ ] Every container passes Trivy with no `HIGH`/`CRITICAL` unsuppressed.
+- [ ] HPA scales a service up and back down on kind under synthetic load.
+- [ ] Images are reproducible: same commit → same digest.
+
+---
+
+## Phase 14 — CI/CD and deployment · **L** · *rescoped to $0 by ADR-13*
+
+**Goal.** `git push` → tested, containerized, pushed to a free registry,
+deployed to a real (if ephemeral) Kubernetes cluster and a real public
+frontend URL. Zero cloud spend, by construction rather than by discipline
+during a time-boxed window.
+
+**Deliverables.**
+- Actions pipeline: lint → unit → integration (Testcontainers) → `kafka-compat`
+  → build images → Trivy → push to **GHCR** (immutable tags = commit SHA) →
+  spin up a fresh **kind** cluster inside the runner → `helm install` → smoke
+  test → **invariant check as a deployment gate**.
+- Frontend pipeline: build → deploy to **Vercel / Cloudflare Pages** (free,
+  permanent) → real public URL, independent of whether a cluster is up.
+- Infrastructure as code: **Terraform** for VPC, EKS, RDS, ECR, IAM/IRSA is
+  **written in full and kept in the tree**, gated in CI by `terraform validate`
+  and `terraform plan` only. **`terraform apply` never runs** — this is the
+  entire mechanism by which the pipeline stays at $0 while the IaC skill is
+  still demonstrated and checked for drift/correctness on every push.
+- `infra/teardown.sh` retained for local hygiene
+  (`kind delete cluster`, `docker compose down -v`) and for the fallback path.
+- `docs/DEPLOYMENT.md`: the executed $0 path in full, **and** the costed AWS
+  fallback path from `ARCHITECTURE.md` §15.4 as a documented option requiring
+  separate, explicit sign-off before ever being run.
+
+**Dependencies.** Phase 13.
+
+**Cost gate.** None needed for the executed path — nothing in it can bill.
+The AWS fallback (§15.4) remains gated exactly as originally specified
+(`CLAUDE.md` §9: named before creation, time-boxed, torn down) but is not run
+as part of this phase unless the human separately asks for it.
+
+**Exit criteria.**
+- [ ] Pipeline green end to end on a real push: build → test → containerize →
+      GHCR → deploy to a freshly created kind cluster.
+- [ ] The deployed-in-CI system serves a real order end to end via the smoke
+      test; the frontend on Vercel/Pages shows the same system live when
+      pointed at a locally or CI-run cluster.
+- [ ] The invariant checker runs in-cluster and reports clean.
+- [ ] A deliberately broken commit **fails the pipeline** and is not deployed —
+      the gate is proven, not assumed.
+- [ ] `terraform validate` and `terraform plan` are green in CI;
+      **`terraform apply` is confirmed absent from every automated path** (grep
+      the workflow files as part of this check).
+- [ ] `docs/DEPLOYMENT.md` accurately describes a $0 path that a reader could
+      follow with no AWS account at all.
+- [ ] Nothing billable exists anywhere as a result of this phase — there is
+      nothing to tear down, and that absence is itself verified rather than
+      assumed.
+
+---
+
+## Phase 15 — Autoscaling measurement · **S/M** · *rescoped to local k3d by ADR-13*
+
+**Goal.** Numbers for pod count vs. load and scale-up latency, on a real
+multi-node Kubernetes control loop — just not a real cloud's worth of nodes
+underneath it.
+
+**Deliverables.**
+- HPA on `saga-orchestrator` (custom metric: `conveyor_saga_active`, via
+  prometheus-adapter) and on `order-service` (CPU) — one infrastructure-metric
+  and one application-metric autoscaler, because they behave differently and the
+  difference is worth showing.
+- A **multi-node k3d cluster** (several agent nodes, resource-limited to force
+  real scheduling decisions rather than everything fitting on one node) as the
+  measurement environment.
+- Load profile from Phase 12's k6 scripts, stepped to trigger scaling.
+- Instrumentation capturing: offered load, replica count, per-replica CPU,
+  end-to-end latency, and **scale-up latency** decomposed into
+  metric-scrape-delay → HPA-decision → pod-scheduled → pod-Ready → serving.
+- `RESULTS.md`: table + plot of pod count vs. load; scale-up and scale-down
+  latency; behaviour at the stabilization window; **and one paragraph naming
+  what is *not* measured here** — see the named limitation below.
+
+**Dependencies.** Phase 14.
+
+**Cost gate.** None — entirely local.
+
+**Named limitation, stated up front rather than discovered by a reviewer.**
+Pod-level HPA (replica count in response to load) is fully and honestly
+measured here — the HPA control loop behaves identically regardless of what
+the nodes underneath it are. **Node-level cluster autoscaling** (provisioning
+new EC2 instances when the cluster itself runs out of capacity) is *not*
+measured, because it is a claim about acquiring physical capacity from a cloud
+provider, and this project deliberately provisions none (ADR-13). This goes in
+`docs/LIMITATIONS.md` verbatim, not softened.
+
+**Exit criteria.**
+- [ ] At least one service demonstrably scales up under load and back down after.
+- [ ] Scale-up latency measured and **decomposed**, not quoted as one number —
+      the decomposition is the insight (most of it is usually scrape interval,
+      not scheduling), and this holds regardless of the underlying infra.
+- [ ] Pod-count-vs-load table and plot in `RESULTS.md`.
+- [ ] Throughput at *n* replicas vs. 1 replica reported, with the scaling
+      efficiency (it will not be linear; say so and say why).
+- [ ] Invariant checker clean throughout the scaling event — **scaling must not
+      break correctness**, and mid-rebalance is exactly where it would.
+- [ ] The node-level-autoscaling limitation is written into `docs/LIMITATIONS.md`
+      before this phase is marked complete, not deferred to Phase 16.
+- [ ] `kind delete cluster` / `k3d cluster delete` run at the end — local hygiene,
+      not a cost concern.
+
+---
+
+## Phase 16 — Documentation, demo, and the interview defence · **M**
+
+**Goal.** Make the work legible to someone who was not here — a reviewer, an
+interviewer, or a future session with no memory of this one.
+
+**Deliverables.**
+- Root `README.md`: what it is, the architecture diagram, the 2PC↔Saga
+  throughline, local quickstart, deployment summary, **results table with real
+  numbers**, and what each part of the stack demonstrates
+  (`ARCHITECTURE.md` Appendix A).
+- `docs/adr/` complete and reconciled with what was actually built — every place
+  the implementation diverged from Phase 0 is stated.
+- `RESULTS.md` final pass: every number with its measurement conditions.
+- `docs/DEMO.md` + a recorded walkthrough (~3 min): place an order, watch it
+  flow, force a payment failure, watch compensation, kill the orchestrator
+  mid-saga, watch recovery, show the trace, show the invariant checker.
+- `docs/INTERVIEW.md`: ~20 questions this project must survive, answered —
+  *"why Saga and not 2PC here?"*, *"what does the outbox buy you and what does it
+  cost?"*, *"exactly-once — really?"*, *"what breaks first at 100× load?"*,
+  *"what would you do differently?"*
+- **`docs/LIMITATIONS.md`**: what this system does not do and what would break
+  in production. Written honestly.
+- **Optional stretch (ADR-6):** Apicurio Schema Registry + Avro on one topic. Cut
+  first if time runs short; cutting it is recorded in `CONTEXT.md`, not silent.
+
+**Dependencies.** Phase 15.
+
+**Exit criteria.**
+- [ ] Every item in `CLAUDE.md` §8 (Definition of Done) is checked off with a
+      pointer to where it is evidenced.
+- [ ] A clean-machine run of the README quickstart works — verified by following
+      it literally, not from memory.
+- [ ] Demo recorded.
+- [ ] `BUGS.md` reconciled: every entry has a final status; open ones state what
+      is needed to close them.
+- [ ] `CONTEXT.md` reflects a completed project.
+
+---
+
+## Risks and cut lines
+
+| Risk | Mitigation | Cut line |
+|---|---|---|
+| Phase 6 (orchestrator) is the hardest phase and could sprawl | Saga engine kept minimal — one definition, no dynamic branching, no nested sagas | Cut the retry endpoint and the DSL; hardcode the step list |
+| Testcontainers-heavy suites become slow enough to skip | Redpanda (ADR-2); reuse containers across test classes; split CI into parallel jobs | Move the slowest integration tests to a nightly job — **never** cut the outbox, concurrency, or crash-recovery tests |
+| Cloud cost | **Eliminated by ADR-13**, not merely mitigated: the executed path (kind/k3d, GHCR, Vercel/Pages, Atlas M0) cannot bill anything. The costed AWS path (`ARCHITECTURE.md` §15.4) is kept on record and Terraform-`plan`-validated but is never applied without a separate, explicit go-ahead. | N/A — there is nothing to cut back from |
+| The dashboard eats time (polish is unbounded) | Fixed component library (shadcn/ui); two screens only | Cut animation polish and the admin adjust dialog — **never** cut the live kanban or the timeline; they are the demo |
+| Chaos results are not 100 % | This is expected and is a *deliverable*, not a failure | None — report honestly per the brief |
+| Frontend/backend contract drift | TS types generated from OpenAPI; a drift check in CI | None |
+| Scope creep into a storefront | `ARCHITECTURE.md` §16 non-goals | None |
+
+**Never cut, under any schedule pressure:** the transactional outbox, consumer
+idempotency, the invariant checker with its negative controls, and the chaos
+matrix. They are the project's argument. Everything else is supporting material.
+
+---
+
+## How a phase ends
+
+Per `CLAUDE.md` §2.4 and §5–6, every phase closes with:
+
+1. All exit criteria checked, with the test output that proves each one.
+2. `BUGS.md` updated with everything found during the phase — including bugs
+   found and fixed in the same breath.
+3. `CONTEXT.md` updated: phase marked complete, next phase's first steps
+   written, decisions logged.
+4. A conventional-commit sequence that reads as a coherent story.
+5. A summary to the human, and a **stop**.
