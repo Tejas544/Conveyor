@@ -1,0 +1,79 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: build, unit + integration tests (Redpanda — the default local/CI broker, ADR-2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: mvn verify (compile, unit tests, integration tests, Spotless, Checkstyle)
+        run: ./mvnw -B verify
+
+      - name: Upload surefire reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: "**/target/surefire-reports/*"
+
+  kafka-compat:
+    name: integration tests against real Apache Kafka (ADR-2 compatibility gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      # ADR-2: Redpanda is the default local/CI broker for speed, but that
+      # convenience is only trustworthy if compatibility is tested, not
+      # assumed. This job re-runs the same integration suites against real
+      # Apache Kafka. -Dconveyor.broker=kafka is read by
+      # AbstractIntegrationTest once it exists (Phase 2+); until then this
+      # job runs the same suite Redpanda already covers, as a placeholder
+      # that will start exercising the real KafkaContainer path as soon as
+      # a service actually needs it.
+      - name: mvn verify against Apache Kafka
+        run: ./mvnw -B verify -Dconveyor.broker=kafka
+
+  security-scan:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner (filesystem)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+  secrets-scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
