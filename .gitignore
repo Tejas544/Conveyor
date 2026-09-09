@@ -1,0 +1,48 @@
+# Build output
+target/
+build/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# Java
+*.log
+hs_err_pid*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# Env / secrets — never commit real values
+.env
+.env.local
+*.pem
+*.key
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code session-local state
+.claude/
+
+# Local K8s / infra scratch
+kubeconfig*
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# Test/tooling output
+/chaos/results/*.json
+/RESULTS.local.md
