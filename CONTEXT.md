@@ -5,7 +5,7 @@ state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 2 — Data layer, domain model and migrations · In progress**
+**Phase 3 — Order Service: REST, aggregate, outbox · Not started**
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -24,29 +24,48 @@ a minute.
   Spring context-load tests per service (Postgres + Redpanda + Mongo), and
   (once BUG-0002 was resolved by the human's Docker Desktop repair)
   `docker compose up -d --build` brought all 8 containers to `Healthy` with
-  all 5 `/actuator/health` endpoints returning `UP` — verified this session,
-  stack torn down afterward.
+  all 5 `/actuator/health` endpoints returning `UP`.
+- Phase 2 — Data layer, domain model and migrations ✅ (2026-09-10). Flyway
+  `V1__baseline.sql` per service (orders/order_items/users, saga_instances/
+  saga_steps, stock_items/reservations/stock_adjustments, payments/
+  payment_attempts, shipments — plus outbox/inbox in all five, including
+  dispatch-service per ADR-7 despite a §4 table omission — see Key Decisions
+  Log below); JPA
+  entities + Spring Data repositories for every aggregate; MongoDB
+  `$jsonSchema` validators on `catalog` (inventory-service) and
+  `notifications` (dispatch-service), created idempotently at startup by a
+  small `InitializingBean` since Mongo has no Flyway equivalent; per-service
+  Postgres roles/grants plus a `conveyor_verifier` role with `SELECT`-only
+  access across every schema via `ALTER DEFAULT PRIVILEGES`, so tables Flyway
+  creates later automatically grant it read access; `make seed` (`ops`/`admin`
+  users, 50 catalog SKUs with stock) as one-shot `ApplicationRunner`s gated on
+  a `seed` Spring profile, verified idempotent against the live stack; `make
+  reset` verified to tear down cleanly. All exit criteria met: `./mvnw verify`
+  green across all 7 modules (Flyway-to-head + `flyway validate`, repository
+  CRUD, the oversell constraint proven by a direct bypass of the guarded
+  `UPDATE`, both Mongo validators rejecting an invalid document, and the
+  verifier-role privilege test), plus `make seed && make seed` (idempotent)
+  and `make reset` verified live against `docker compose up -d --build`.
+  Two bugs found and fixed this phase — see `BUGS.md` BUG-0003 and the
+  significant one, BUG-0004 (a Testcontainers/Docker Desktop environment
+  defect where every test class after the first in a shared Surefire fork
+  had its Postgres connections refused; fixed via `reuseForks=false`).
 
 ## In Progress
-- Starting Phase 2 per `PLAN.md`: Flyway migrations per service (including
-  the oversell `CHECK` constraint and idempotency-key unique constraints),
-  `outbox`/`inbox` tables in all five service databases, JPA entities +
-  Spring Data repositories, MongoDB `$jsonSchema` validators on `catalog` and
-  `notifications`, seed data (~50 catalog SKUs, `ops`/`admin` users), and
-  per-service DB roles/grants including the verifier's read-only role.
+- Nothing — between phases.
 
 ## Blockers
 - None.
 
 ## Next Steps
-1. Design the per-service schemas (tables, indexes, constraints) matching
-   `ARCHITECTURE.md` §5.
-2. Write Flyway `V1__baseline.sql` migrations per service.
-3. Add JPA entities/repositories and Mongo validators; wire seed data and
-   `make seed`.
-4. Write the Phase 2 exit-criterion tests (Flyway-to-head, repository CRUD,
-   oversell constraint, Mongo validator rejection, verifier role privilege
-   test) and get them green before marking Phase 2 complete.
+1. Begin Phase 3 (`PLAN.md`): Order Service REST API (`POST /orders`,
+   `GET /orders/{id}`, `GET /orders`, `GET /orders/summary`), the order
+   aggregate's guarded state machine, the transactional outbox poller in
+   `conveyor-common` (first real use — Phase 2 only modeled the table/entity),
+   and consumers projecting saga replies onto `orders.status`.
+2. Phase 3's headline test is outbox crash safety (kill the publisher between
+   commit and publish; on restart the event still reaches Kafka exactly once)
+   — design the poller with that test in mind from the start.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -61,6 +80,14 @@ a minute.
 
 Full reasoning for each is in `ARCHITECTURE.md` §3.
 
+- **Phase 2 — dispatch-service gets an `outbox` table**, even though
+  `ARCHITECTURE.md` §4's ownership table lists only `shipments, inbox` for it.
+  ADR-7 ("no service ever writes its database and publishes to Kafka as two
+  independent operations") and `PLAN.md` Phase 2's own deliverable ("outbox/
+  inbox tables in all five service databases") both require one, since
+  dispatch-service publishes `ShipmentCreated`. Treated as a §4 table
+  omission, not a deliberate exception — the migration file carries the same
+  note.
 - **ADR-1 — Saga style: orchestration, in a dedicated `saga-orchestrator`
   service.** Chosen because a coordinator with a durable log is the honest
   analogue of Anvil's 2PC coordinator (which is the project's entire thesis),

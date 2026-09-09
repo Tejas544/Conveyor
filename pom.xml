@@ -96,6 +96,21 @@
             </java>
           </configuration>
         </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <configuration>
+            <!-- BUGS.md (this machine's Docker Desktop/WSL2 environment): a shared JVM fork
+                 running more than one Testcontainers-backed @SpringBootTest class reliably
+                 breaks the Postgres container's mapped port for every class after the first,
+                 even with identical, cached Spring context reuse and a shrunk connection pool.
+                 A fresh fork per test class gives every class its own containers and sidesteps
+                 it — slower, but correctness over speed for an environment-specific bug that
+                 isn't fixable from application code. -->
+            <reuseForks>false</reuseForks>
+            <forkCount>1</forkCount>
+          </configuration>
+        </plugin>
       </plugins>
     </pluginManagement>
     <plugins>
