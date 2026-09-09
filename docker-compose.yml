@@ -25,6 +25,8 @@ services:
       DISPATCH_DB_NAME: ${DISPATCH_DB_NAME:-dispatch_service}
       DISPATCH_DB_USER: ${DISPATCH_DB_USER:-dispatch_service}
       DISPATCH_DB_PASSWORD: ${DISPATCH_DB_PASSWORD:-dispatch_service_local_dev_only}
+      VERIFIER_DB_USER: ${VERIFIER_DB_USER:-conveyor_verifier}
+      VERIFIER_DB_PASSWORD: ${VERIFIER_DB_PASSWORD:-verifier_local_dev_only}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init-service-databases.sh:/docker-entrypoint-initdb.d/init-service-databases.sh:ro
@@ -86,6 +88,10 @@ services:
       DB_USERNAME: ${ORDER_DB_USER:-order_service}
       DB_PASSWORD: ${ORDER_DB_PASSWORD:-order_service_local_dev_only}
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      SEED_OPS_USERNAME: ${SEED_OPS_USERNAME:-ops}
+      SEED_OPS_PASSWORD: ${SEED_OPS_PASSWORD:-ops_local_dev_only}
+      SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-admin}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin_local_dev_only}
     ports:
       - "8081:8081"
     depends_on:

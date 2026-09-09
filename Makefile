@@ -24,6 +24,9 @@ test:
 verify:
 	./mvnw verify
 
-# Phase 2 fills this in once there is a schema to seed against.
+# PLAN.md Phase 2: demo users (order-service) + ~50 catalog SKUs with stock
+# (inventory-service). Idempotent — safe to run against an already-seeded
+# stack. Each is a one-shot container that exits once seeding completes.
 seed:
-	@echo "make seed: no-op until Phase 2 (data layer) lands — see PLAN.md."
+	docker compose run --rm -e SPRING_PROFILES_ACTIVE=seed order-service
+	docker compose run --rm -e SPRING_PROFILES_ACTIVE=seed inventory-service

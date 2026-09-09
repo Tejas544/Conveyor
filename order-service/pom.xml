@@ -61,6 +61,13 @@
       <version>${springdoc.version}</version>
     </dependency>
     <dependency>
+      <!-- BCryptPasswordEncoder only — not spring-boot-starter-security, which would
+           auto-configure a login wall over every endpoint (including /actuator/health)
+           before ADR-5's resource-server config exists (Phase 3+). -->
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-crypto</artifactId>
+    </dependency>
+    <dependency>
       <groupId>com.conveyor</groupId>
       <artifactId>conveyor-common</artifactId>
     </dependency>

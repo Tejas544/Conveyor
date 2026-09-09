@@ -79,6 +79,13 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
     </dependency>
+    <dependency>
+      <!-- Test-scope, raw JDBC only: VerifierRolePrivilegeTest connects directly as the
+           conveyor_verifier role, with no JPA/Spring Data context involved. -->
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

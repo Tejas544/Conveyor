@@ -46,3 +46,12 @@ springdoc:
     path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+
+# make seed (PLAN.md Phase 2) — only read under the "seed" profile.
+seed:
+  ops:
+    username: ${SEED_OPS_USERNAME:ops}
+    password: ${SEED_OPS_PASSWORD:ops_local_dev_only}
+  admin:
+    username: ${SEED_ADMIN_USERNAME:admin}
+    password: ${SEED_ADMIN_PASSWORD:admin_local_dev_only}
