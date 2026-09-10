@@ -33,6 +33,15 @@
       <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
     <dependency>
+      <!-- OutboxPoller reads/updates the shared `outbox` table via plain JDBC (SKIP LOCKED
+           has no clean JPA equivalent), so it works against any service regardless of that
+           service's own JPA entity for the table. Every service already pulls this
+           transitively via spring-boot-starter-data-jpa; declared directly here so
+           conveyor-common compiles standalone. -->
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.springframework.kafka</groupId>
       <artifactId>spring-kafka</artifactId>
     </dependency>

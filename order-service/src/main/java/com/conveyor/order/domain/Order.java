@@ -5,6 +5,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderBy;
@@ -62,7 +63,13 @@ public class Order {
   @Column(name = "updated_at", nullable = false)
   private Instant updatedAt;
 
-  @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+  // EAGER: Order and its line items are always read together (OrderDetailResponse, the
+  // OrderPlaced payload) — never worth a second query or a LazyInitializationException risk.
+  @OneToMany(
+      mappedBy = "order",
+      cascade = CascadeType.ALL,
+      orphanRemoval = true,
+      fetch = FetchType.EAGER)
   @OrderBy("sku")
   private List<OrderItem> items = new ArrayList<>();
 
@@ -97,8 +104,15 @@ public class Order {
     return status;
   }
 
-  public void setStatus(OrderStatus status) {
-    this.status = status;
+  /**
+   * The only way {@link #status} changes after construction. ARCHITECTURE.md §7.1: an illegal
+   * transition throws rather than silently writing.
+   */
+  public void transitionTo(OrderStatus target) {
+    if (!status.canTransitionTo(target)) {
+      throw new IllegalOrderTransitionException(status, target);
+    }
+    this.status = target;
   }
 
   public UUID getSagaId() {

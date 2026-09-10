@@ -1,0 +1,6 @@
+conveyor:
+  outbox:
+    poller:
+      # Deterministic tests: nothing publishes on a background schedule racing the assertions.
+      # Tests that need a row published call outboxPoller.publishOneBatch() directly.
+      enabled: false

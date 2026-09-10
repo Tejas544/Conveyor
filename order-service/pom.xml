@@ -71,6 +71,10 @@
       <groupId>com.conveyor</groupId>
       <artifactId>conveyor-common</artifactId>
     </dependency>
+    <dependency>
+      <groupId>com.conveyor</groupId>
+      <artifactId>conveyor-contracts</artifactId>
+    </dependency>
 
     <dependency>
       <groupId>org.springframework.boot</groupId>

@@ -82,12 +82,12 @@ class OrderRepositoryIntegrationTest extends AbstractIntegrationTest {
   @Transactional
   void updatesAndDeletes() {
     Order saved = orderRepository.saveAndFlush(newOrder("idem-upd"));
-    saved.setStatus(OrderStatus.CONFIRMED);
+    saved.transitionTo(OrderStatus.INVENTORY_RESERVED);
     orderRepository.saveAndFlush(saved);
     entityManager.clear();
 
     assertThat(orderRepository.findById(saved.getId()).orElseThrow().getStatus())
-        .isEqualTo(OrderStatus.CONFIRMED);
+        .isEqualTo(OrderStatus.INVENTORY_RESERVED);
 
     orderRepository.deleteById(saved.getId());
     orderRepository.flush();
