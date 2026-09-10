@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conveyor.internal/schemas/refund-payment.schema.json",
+  "title": "RefundPayment",
+  "description": "ARCHITECTURE.md §6.1, §6.3. The envelope shape with eventType/payload constrained for the RefundPayment command.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "eventType": { "const": "RefundPayment" },
+        "schemaVersion": { "const": 1 },
+        "payload": {
+          "type": "object",
+          "required": ["paymentId", "amount", "idempotencyKey"],
+          "properties": {
+            "paymentId": { "type": "string", "format": "uuid" },
+            "amount": { "type": "number", "exclusiveMinimum": 0 },
+            "idempotencyKey": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

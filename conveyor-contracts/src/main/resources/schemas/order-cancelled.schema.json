@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conveyor.internal/schemas/order-cancelled.schema.json",
+  "title": "OrderCancelled",
+  "description": "ARCHITECTURE.md §6.1, §6.3, §8.2. The envelope shape with eventType/payload constrained for OrderCancelled.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "eventType": { "const": "OrderCancelled" },
+        "schemaVersion": { "const": 1 },
+        "payload": {
+          "type": "object",
+          "required": ["reason", "compensatedSteps"],
+          "properties": {
+            "reason": { "type": "string", "minLength": 1 },
+            "compensatedSteps": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

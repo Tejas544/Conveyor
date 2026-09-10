@@ -1,0 +1,10 @@
+conveyor:
+  outbox:
+    poller:
+      # Deterministic tests: nothing publishes on a background schedule racing the assertions.
+      enabled: false
+  saga:
+    forward-step-timeout: 30s
+    compensation-step-timeout: 60s
+    sweep-interval: 999999s
+    max-compensation-attempts: 3

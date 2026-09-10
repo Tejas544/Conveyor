@@ -6,6 +6,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 import org.hibernate.annotations.CreationTimestamp;
@@ -45,6 +46,14 @@ public class SagaInstance {
 
   @Column(nullable = false)
   private int attempt;
+
+  @Column(name = "total_amount")
+  private BigDecimal totalAmount;
+
+  @Column private String currency;
+
+  @Column(name = "payment_method_token")
+  private String paymentMethodToken;
 
   @CreationTimestamp
   @Column(name = "created_at", nullable = false, updatable = false)
@@ -121,6 +130,30 @@ public class SagaInstance {
 
   public void setAttempt(int attempt) {
     this.attempt = attempt;
+  }
+
+  public BigDecimal getTotalAmount() {
+    return totalAmount;
+  }
+
+  public void setTotalAmount(BigDecimal totalAmount) {
+    this.totalAmount = totalAmount;
+  }
+
+  public String getCurrency() {
+    return currency;
+  }
+
+  public void setCurrency(String currency) {
+    this.currency = currency;
+  }
+
+  public String getPaymentMethodToken() {
+    return paymentMethodToken;
+  }
+
+  public void setPaymentMethodToken(String paymentMethodToken) {
+    this.paymentMethodToken = paymentMethodToken;
   }
 
   public Instant getCreatedAt() {
