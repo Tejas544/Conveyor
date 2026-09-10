@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conveyor.internal/schemas/payment-charged.schema.json",
+  "title": "PaymentCharged",
+  "description": "ARCHITECTURE.md §6.1, §6.3. The envelope shape with eventType/payload constrained for PaymentCharged.",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "eventType": { "const": "PaymentCharged" },
+        "schemaVersion": { "const": 1 },
+        "payload": {
+          "type": "object",
+          "required": ["paymentId", "amount", "currency", "gatewayReference"],
+          "properties": {
+            "paymentId": { "type": "string", "format": "uuid" },
+            "amount": { "type": "number", "exclusiveMinimum": 0 },
+            "currency": { "type": "string", "minLength": 3, "maxLength": 3 },
+            "gatewayReference": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

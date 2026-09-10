@@ -1,0 +1,13 @@
+conveyor:
+  outbox:
+    poller:
+      # Deterministic tests: nothing publishes on a background schedule racing the assertions.
+      # Tests that need a row published call outboxPoller.publishOneBatch() directly.
+      enabled: false
+
+spring:
+  datasource:
+    hikari:
+      # PLAN.md Phase 5's headline test drives 5 concurrent charges at once against the same
+      # idempotency key; a small pool would just serialize them on a connection wait.
+      maximum-pool-size: 20
