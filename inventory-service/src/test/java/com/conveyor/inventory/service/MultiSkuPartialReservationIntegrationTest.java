@@ -9,8 +9,9 @@ import com.conveyor.inventory.outbox.OutboxRecord;
 import com.conveyor.inventory.outbox.OutboxRecordRepository;
 import com.conveyor.inventory.repository.ReservationRepository;
 import com.conveyor.inventory.repository.StockItemRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +27,7 @@ class MultiSkuPartialReservationIntegrationTest extends AbstractIntegrationTest 
   @Autowired private ReservationRepository reservationRepository;
   @Autowired private StockItemRepository stockItemRepository;
   @Autowired private OutboxRecordRepository outboxRecordRepository;
+  @Autowired private ObjectMapper objectMapper;
 
   @Test
   void oneShortSkuInAMultiSkuOrderReservesNoneOfIt() {
@@ -53,12 +55,14 @@ class MultiSkuPartialReservationIntegrationTest extends AbstractIntegrationTest 
             .orElseThrow();
     assertThat(reply.getEventType()).isEqualTo("InventoryReservationFailed");
 
-    @SuppressWarnings("unchecked")
-    Map<String, Object> payload = (Map<String, Object>) reply.getPayload().get("payload");
-    assertThat(payload.get("reason")).isEqualTo("INSUFFICIENT_STOCK");
-    @SuppressWarnings("unchecked")
-    List<Map<String, Object>> shortfalls = (List<Map<String, Object>>) payload.get("shortfalls");
+    // objectMapper here is the same Spring-managed ObjectMapper bean Hibernate's JSON column
+    // mapping now reuses (JacksonHibernateJsonFormatConfiguration in conveyor-common — BUGS.md
+    // BUG-0010) rather than an internally-constructed one that happened to pick up jackson-module-
+    // scala from the test classpath, so nested payload content is consistently java.util.Map.
+    JsonNode payload = objectMapper.valueToTree(reply.getPayload()).get("payload");
+    assertThat(payload.get("reason").asText()).isEqualTo("INSUFFICIENT_STOCK");
+    JsonNode shortfalls = payload.get("shortfalls");
     assertThat(shortfalls).hasSize(1);
-    assertThat(shortfalls.get(0).get("sku")).isEqualTo("SKU-SHORT-1");
+    assertThat(shortfalls.get(0).get("sku").asText()).isEqualTo("SKU-SHORT-1");
   }
 }

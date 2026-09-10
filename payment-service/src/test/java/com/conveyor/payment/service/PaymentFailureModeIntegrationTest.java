@@ -6,8 +6,9 @@ import com.conveyor.common.testsupport.AbstractIntegrationTest;
 import com.conveyor.payment.gateway.MockPaymentGateway;
 import com.conveyor.payment.outbox.OutboxRecord;
 import com.conveyor.payment.outbox.OutboxRecordRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
-import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,6 +22,7 @@ class PaymentFailureModeIntegrationTest extends AbstractIntegrationTest {
   @Autowired private PaymentChargeService paymentChargeService;
   @Autowired private MockPaymentGateway gateway;
   @Autowired private OutboxRecordRepository outboxRecordRepository;
+  @Autowired private ObjectMapper objectMapper;
 
   @Test
   void declineProducesDeclinedReasonAndIsNotRetryable() {
@@ -52,9 +54,12 @@ class PaymentFailureModeIntegrationTest extends AbstractIntegrationTest {
             .orElseThrow();
     assertThat(reply.getEventType()).isEqualTo("PaymentFailed");
 
-    @SuppressWarnings("unchecked")
-    Map<String, Object> payload = (Map<String, Object>) reply.getPayload().get("payload");
-    assertThat(payload.get("reason")).isEqualTo(expectedReason);
-    assertThat(payload.get("retryable")).isEqualTo(expectedRetryable);
+    // objectMapper here is the same Spring-managed ObjectMapper bean Hibernate's JSON column
+    // mapping now reuses (conveyor-common's HibernateJsonFormatMapperAutoConfiguration —
+    // BUGS.md BUG-0010) rather than an internally-built one that picked up jackson-module-scala
+    // from the test classpath, so nested payload content is consistently java.util.Map.
+    JsonNode payload = objectMapper.valueToTree(reply.getPayload()).get("payload");
+    assertThat(payload.get("reason").asText()).isEqualTo(expectedReason);
+    assertThat(payload.get("retryable").asBoolean()).isEqualTo(expectedRetryable);
   }
 }

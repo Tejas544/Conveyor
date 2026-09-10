@@ -20,6 +20,72 @@ Format for each entry:
 
 ---
 
+## [BUG-0010] `jackson-module-scala` (test-scope, via embedded Kafka) hijacked Hibernate's JSON-column deserialization
+- **Date:** 2026-09-10
+- **Phase:** Phase 4 — Inventory Service, Phase 5 — Payment Service
+- **Severity:** Medium (test-only; no production code path is affected)
+- **Symptom:** `ClassCastException: class scala.collection.immutable.Map$Map2 cannot be cast to
+  class java.util.Map` in `ReservationIdempotencyIntegrationTest`,
+  `MultiSkuPartialReservationIntegrationTest`, `PaymentFailureModeIntegrationTest`, and
+  `PaymentChargeConcurrencyIntegrationTest` — all four cast a nested value out of an `OutboxRecord`'s
+  `Map<String, Object> payload` field (`reply.getPayload().get("payload")`) to `Map<String, Object>`.
+  A first attempt (re-reading the value through `objectMapper.valueToTree(...)` instead of casting)
+  fixed two of the four but left the other two failing with a `NullPointerException` instead —
+  debug output showed *why*: `objectMapper.valueToTree(...)` was serializing the Scala map by
+  reflecting over its private fields (`"scala$collection$immutable$Map$Map2$$key1"`, `"empty"`,
+  `"traversableAgain"` — Jackson's generic POJO fallback) rather than as a proper JSON object,
+  proving Spring's own `ObjectMapper` bean does **not** have `jackson-module-scala` registered,
+  even though *something* clearly used it to produce the Scala map in the first place.
+- **Root cause:** `spring-kafka-test` pulls in `org.apache.kafka:kafka_2.13` (the Scala broker, for
+  `@EmbeddedKafka` support) at test scope, which transitively pulls
+  `com.fasterxml.jackson.module:jackson-module-scala_2.13`. Hibernate 6's default JSON column
+  support (`@JdbcTypeCode(SqlTypes.JSON)`, used by every service's `outbox`/`inbox` tables) builds
+  its **own**, separate `ObjectMapper` internally and calls `findAndRegisterModules()` on it —
+  independent of the Spring-managed `ObjectMapper` bean the rest of the application uses. That
+  internal mapper picks up `DefaultScalaModule` purely because the jar is on the test classpath
+  (nothing in application code asks for it), which overrides Jackson's default "untyped `Object`"
+  deserializer to prefer Scala collection types for values whose type is erased to `Object` —
+  exactly what nested nodes inside a nominally `Map<String, Object>` JSON column are. Two
+  *different, silently divergent* `ObjectMapper` configurations in the same application, not a bug
+  in `com.conveyor.inventory`/`payment`'s own code.
+- **Fix:** conveyor-common gained `HibernateJsonFormatMapperAutoConfiguration`, a
+  `HibernatePropertiesCustomizer` that points Hibernate's JSON column mapping at the application's
+  own `ObjectMapper` bean (`JacksonJsonFormatMapper`) instead of letting Hibernate build a private
+  one — the root-cause fix, applied once for every service, rather than working around the symptom
+  per call site. The four affected tests still read nested payload content via
+  `objectMapper.valueToTree(reply.getPayload())` rather than casting to `java.util.Map` (harmless
+  either way once the mapper is consistent, and more defensive regardless).
+  `InventoryReplyContractTest` and `PaymentReplyContractTest` were never affected, since they read
+  the raw JSON string off the actual Kafka topic rather than the in-process `OutboxRecord.payload`
+  field.
+- **Status:** Fixed.
+
+---
+
+## [BUG-0009] Manually re-flowed base64 in `TestJwtSupport`'s RSA private key was corrupted
+- **Date:** 2026-09-10
+- **Phase:** Phase 4 — Inventory Service
+- **Severity:** Medium (test-only; the matching public key, embedded the same way in
+  `JwtSecurityProperties`, happened to survive — every other test in the module proves that, since a
+  broken `JwtDecoder` bean would have failed the whole Spring context, not two isolated test methods)
+- **Symptom:** both `InventoryAdjustIntegrationTest` tests failed with
+  `java.lang.IllegalStateException: Failed to mint test JWT`, thrown from
+  `TestJwtSupport.token()` wrapping a key-parsing exception.
+- **Root cause:** the RSA keypair's base64 DER was generated once via `openssl`, then manually
+  split across multiple Java string-literal `+`-concatenation lines to satisfy Checkstyle's 150-char
+  `LineLength` rule. That manual re-flow introduced a transcription error in the ~1600-character
+  private-key string (the shorter ~370-character public key apparently survived the same process
+  intact, or at least intact enough to parse — RSA public keys are far more tolerant of small
+  encoding slips reaching a still-valid `X509EncodedKeySpec` than a PKCS8 private key is).
+- **Fix:** regenerated a fresh demo/test keypair and embedded both halves as Java text blocks
+  (`"""..."""`) containing the PEM body exactly as `openssl` wrapped it (64 columns, its own line
+  breaks) — no manual character-boundary math at all — with whitespace stripped at runtime before
+  Base64 decoding. Eliminates this entire class of transcription bug rather than just this instance
+  of it.
+- **Status:** Fixed.
+
+---
+
 ## [BUG-0008] Docker Desktop daemon unresponsive — blocks Phase 4/5 live Testcontainers and compose verification
 - **Date:** 2026-09-10
 - **Phase:** Phase 4 — Inventory Service, Phase 5 — Payment Service
@@ -43,9 +109,20 @@ Format for each entry:
   (concurrency, idempotency, contract, and the ADMIN-auth tests) is **unverified this session**, as is
   `docker compose up` with the new services' images. Per CLAUDE.md §2.5 ("no fake done"), neither
   phase is being marked complete in `CONTEXT.md` until this is confirmed running.
-- **Status:** Open — blocked on the human restarting Docker Desktop (or repeating BUG-0002's WSL2
-  reset if a restart alone doesn't recover it). Unblocks when: `docker ps` responds, then re-run
-  `./mvnw verify` for the full reactor and `docker compose up -d --build` for the live health check.
+- **Status:** Partially resolved, still Open. Docker recovered mid-session (`docker ps` started
+  responding again without any explicit fix from here — the human likely restarted it), which let
+  `./mvnw verify` finally run for the full reactor: **all 7 modules green**, including every Phase
+  4 and Phase 5 test (see CONTEXT.md). `docker compose up -d --build` was then attempted and got
+  partway through the image builds before Docker's BuildKit connection dropped
+  (`rpc error: code = Unavailable desc = error reading from server: EOF`), and the daemon went back
+  to being unresponsive to plain `docker ps` immediately after — the same underlying instability,
+  not a new defect, now with a second concrete symptom (mid-build RPC death, not just a hung CLI).
+  Remains open on **live `docker compose up` health** specifically (Phase 3's one remaining exit
+  criterion) — not on the code, which `./mvnw verify` now independently confirms end to end.
+  **Unblocks when:** the human gets Docker Desktop into a state that survives a full multi-service
+  image build (a restart may not be enough this time, given it died mid-build rather than merely
+  being slow to respond); then re-run `docker compose up -d --build` and confirm all 5 health
+  endpoints return `UP`.
 
 ---
 

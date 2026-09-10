@@ -23,41 +23,49 @@ import java.util.List;
  */
 public final class TestJwtSupport {
 
-  private static final String TEST_PRIVATE_KEY_PKCS8_BASE64 =
-      "MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDJBR1geHd3Fl7QII2QXPWnfIj3"
-          + "CrSczFzIMOqkDceA8EzcoPvqRLsR5P7G1mnrkx8FL9QFpKUTONhdtsXUrG6sQUQ3nYcVyg8Craym"
-          + "dAEquvdmigQisl+QEypiboLgLiLmm2tqT/uC67rnVlKfEhTcVwWWxhCyZ6qohH7MxC89ZHzxW4Ym"
-          + "BdQ7WU7qY0thDyNthe5NNL6/Tu9WHT0Ox8a/glyAWS0507b8EY77n0sjbs+vv5zysQsaEWeIoI6k"
-          + "K3rC4q9JKRALEs7LDiZ/2hV4NSHpN5OrxcxdewhhHRRlFBfsqnC+p4pQ6JT5tZgMZRqR8cQOx69+"
-          + "PBEmg0MB967AgMBAAECggEABwJmuDEUT6BhIvrgwDzaJgJwc+jLlVIYX5AVqwk00uapmJi7BJdH"
-          + "XuiUvpIPRrxAfN5QJa8ViZ76mZTOUZUQzEwkT7xuYcd62YNGGQYEyc8p8L9J/eyH1R88I/T5jGuP"
-          + "sYTG7v58wx5lB9aj01rdEVWCOk4xAXKcMT7XWdA5q7B2lA8LYdxi0m0uHQWu9y6Dm7M+K11817Y1"
-          + "1mOjLo5Gb3fv0r1R4mKwCwnIRv7LZkvMZbntknMIfPdpu8A/y1nCJYYRmusRM2a074Fao+KAwJit"
-          + "i4aBc1tqu/jZg6f9/cUKjTzzC2jheUB1aevhwE/te2m78gHzE8E6qUeTK2il7QKBgQDvWKVzdKDA"
-          + "PuazyMSrrpgsWTEgT3w5X2Ey/AUi4EGnn5oV0UdtoqbtutekgvEWQehQpIWAm4ahWKDPMzU6dxrq"
-          + "xhNf+xCpeqLaZ9iBkI0am5Um9SULoZVhKaEgfuYwo9MrhsssZjgMbpuW5fT4RtAuhOXe9OGwrGsg"
-          + "6pWuA0miVwKBgQDXAcgYLXRGZEq6QpQIU8+bzb7frPlmIFITlh5rzEqnSgakgLYeUBjRmcAKf5nr"
-          + "hwa0O1XbOx++OrNjRm7Oveq5ZAPb8Tyv6Sm77BNz4B4P1L/MsTp1XfxoCr4Sbx5EkdEUVRdfXRKN"
-          + "Q+sEShJkL84qNG54IqBvnTCv3yv4NqdQPQKBgQDpLJxrQXkGMYGCLxrjAwI/WllQ1/72yeQgzoOW"
-          + "eZGc4xEzJiKHPcmQmtFQ9Tw4adcREWb6ZwofEAACPCokHjr79CKWBDs0UURssHStrQy6mk4RmQwR"
-          + "K8ci1HKj/Nz3D/M/WV+AjskV23/632brpdlVKKXlsv5Yp3DqrX9K+ur2mwKBgQCTUdQxxMtcBBIz"
-          + "57SYtByXi/VSO6ozcMfsRbsYb8VjNNSyWMLwqD8pNukgCGiFumI8kj901OEeLgiGaFc6b2TqnH4M"
-          + "cRH9Eo0XB14Y0qKmhEbbUUBV9Q0imOG9rceWgjc5cEhwfkxc4QGiUcKiRSNFReG/jTJS5+jZSNhO"
-          + "3dvsnQKBgQDEnAJMqBWnT8nphRanLSiPesK0wCwoFSITCfdPSEdRgZNhTtL8u6eqsK8/37ROYPc3"
-          + "Y8VkzMMtZFXL9EcjiWvD9soCsaYLMUxMxxWafYeh6JK0vdj5VeejOf56pJpuDTBglKe1p+V/tAhe"
-          + "OUhyrNj8VTFjwiABgswMydznqIiUjw==";
+  // The base64 body of a PEM PKCS8 "PRIVATE KEY" block, pasted verbatim (openssl's own 64-column
+  // wrapping) rather than manually re-flowed, so there is no hand-computed line-break boundary
+  // that could silently corrupt the key.
+  private static final String TEST_PRIVATE_KEY_PKCS8_PEM =
+      """
+      MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCcd/AInPYQ4CJ1
+      cEDGMb9UtiWdeUR3Q/w0GUsGbq8LIofxz6sv9OBjq8L9IMm89/XyuH4uUaNmHhQp
+      WnX4gHO9LShGdWJ0CRlb70m9WiBxtUGrblBvDLnAfYuXTHo3vnS+SxpFKoFZW70C
+      nmRZd1VvMCw8Loj5uXzBHMYzv5zVGfxsHKu2aI9gx3NyWoBkZm0dqa6MB+8hF3Ik
+      4I6CdOaGfBN2+J431bE3tpYCiwBxetKvaWeS6mjdX0ATGf9m9iKSB6QG1GN2jwvl
+      Vz9z+mEk24bjZQibCfBabysGizIuslo5aSN9D56azwg0m8o4WLRM+46rORPvRNxe
+      xpVaCxvjAgMBAAECggEAL9wH0bqhEXxdTequBXGGApVMYCSNqqVi6VSrPCZy6EcB
+      qhdJV3vhfts041Q6IND/q+R+xBA4mK2uoQ+IciBoRn8fiJ2zJab62MISnhaJQf6d
+      PaCafb04vAYqwnakE5TwBJzYRjvAIOMMp1Znf24e9cmYXjglsazo2fDBN2buw8ea
+      i+4HAv6oAIgGyQ3wVsF1MUGBwLf0dYqtA+FpCCaqtXWBb3jlxN3vRa6Wg3wmOmMy
+      8xQrWSWFfPsGxzdpHN1zmAbOrM0ZOaueDJoSMUlSW5GQ05ALKi6zBoj5kZt0xEou
+      Eu/zpueJquwEKE2XtEIcCNxlf2SE+r43cFyNa2HZUQKBgQDOv/oFHahgz3gYYagv
+      yMjyGwA74TZXFVYsXF/n0aLUJWN2w9Q4vLGNk/BnLrKwcUAEiseYtUawChGjEP5l
+      PBsRTNqKuc8soDeZfLkcw102xBQgaLvxq7XW8hBiOUycja7rveO6bXefF9nvLEJ1
+      2sxtNdAdrnBDPvL6lPjiQpMixwKBgQDBvbNN7hAP7bE9EORBeoQrdz+xucoleWok
+      7hgFwseqX6nAa2R9NjwR0RyWJBZOBwFln+5S/9qNCpFgmZ27D58dxD0hOUEbrVZN
+      FxAdsSgQPOuCtp7JhDXRQ3AF/bv2NCT89oB/uwl4eBS0PiRbXZn2zUyDQIuQAI4h
+      qNr73AsiBQKBgCjrcCWRECFRDrjsoygJ+lOIqowvb9zeeTbAda7hG/QXDk+URK2S
+      EyYtUJhrcqxfTcdYXFbKEhqHc6QtmdwZgFX1Ow/X5Lw1XavANrcNp6ZOOpmLgR88
+      1/mZ4Uo/gv09QZCg/bCJN/LB+r1Oqjy/OFSpIO6u9sMoc1jLIVNOz+ZDAoGBAI+c
+      EUQL2iYkd8OfOML8kOozO6h+4kPC6xYy0uW6SwyUWp0CPfu+bup6CemVGF+AO93b
+      neoyMwtnMPndBJk7bCPBadqtuQBODXGZTd3kiqD2t1AuFCel88qJZYlbWq+WWXCV
+      PAzyVIPS5u3wPjzndhAGf9euyYTVlIWIx8H3it0NAoGAI2FV/BHYpLvpvfIl43E3
+      4mCKYHPO9w2luXeunrdpSMWMl184rm4oMdIqhkYTxfy+MBPbqu9duryXvJOLg4E7
+      oUA7w1aFEQle844irYxaF1kYujGIYHKpLuKXLIaR6efx5sjxMjfs/sPH6OhfEOLG
+      xq/lMo1XqUpWNCYzX/SGKp0=
+      """;
 
   private TestJwtSupport() {}
 
   /** Mints a short-lived RS256 token carrying {@code roles} in the claim ADR-5 specifies. */
   public static String token(String subject, String... roles) {
     try {
+      String base64 = TEST_PRIVATE_KEY_PKCS8_PEM.replaceAll("\\s", "");
       RSAPrivateKey privateKey =
           (RSAPrivateKey)
               KeyFactory.getInstance("RSA")
-                  .generatePrivate(
-                      new PKCS8EncodedKeySpec(
-                          Base64.getDecoder().decode(TEST_PRIVATE_KEY_PKCS8_BASE64)));
+                  .generatePrivate(new PKCS8EncodedKeySpec(Base64.getDecoder().decode(base64)));
 
       JWTClaimsSet claims =
           new JWTClaimsSet.Builder()

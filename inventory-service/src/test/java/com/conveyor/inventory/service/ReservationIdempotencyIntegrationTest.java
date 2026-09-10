@@ -10,10 +10,11 @@ import com.conveyor.inventory.outbox.OutboxRecord;
 import com.conveyor.inventory.outbox.OutboxRecordRepository;
 import com.conveyor.inventory.repository.ReservationRepository;
 import com.conveyor.inventory.repository.StockItemRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,7 @@ class ReservationIdempotencyIntegrationTest extends AbstractIntegrationTest {
   @Autowired private OutboxRecordRepository outboxRecordRepository;
   @Autowired private StockItemRepository stockItemRepository;
   @Autowired private MeterRegistry meterRegistry;
+  @Autowired private ObjectMapper objectMapper;
 
   @Test
   void sameCommandDeliveredThreeTimesProducesOneReservationAndThreeIdenticalReplies() {
@@ -62,10 +64,13 @@ class ReservationIdempotencyIntegrationTest extends AbstractIntegrationTest {
             .toList();
     assertThat(replies).hasSize(3);
 
-    Set<Object> distinctReservationIdLists = new HashSet<>();
+    // objectMapper here is the same Spring-managed ObjectMapper bean Hibernate's JSON column
+    // mapping now reuses (conveyor-common's HibernateJsonFormatMapperAutoConfiguration —
+    // BUGS.md BUG-0010) rather than an internally-built one that picked up jackson-module-scala
+    // from the test classpath, so nested payload content is consistently java.util.Map.
+    Set<JsonNode> distinctReservationIdLists = new HashSet<>();
     for (OutboxRecord reply : replies) {
-      @SuppressWarnings("unchecked")
-      Map<String, Object> payload = (Map<String, Object>) reply.getPayload().get("payload");
+      JsonNode payload = objectMapper.valueToTree(reply.getPayload()).get("payload");
       distinctReservationIdLists.add(payload.get("reservationIds"));
     }
     assertThat(distinctReservationIdLists)

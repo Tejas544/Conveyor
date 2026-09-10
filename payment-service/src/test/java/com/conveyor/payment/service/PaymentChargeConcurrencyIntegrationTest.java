@@ -7,6 +7,8 @@ import com.conveyor.payment.domain.PaymentStatus;
 import com.conveyor.payment.outbox.OutboxRecord;
 import com.conveyor.payment.outbox.OutboxRecordRepository;
 import com.conveyor.payment.repository.PaymentRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.HashSet;
 import java.util.Set;
@@ -35,6 +37,7 @@ class PaymentChargeConcurrencyIntegrationTest extends AbstractIntegrationTest {
   @Autowired private PaymentChargeService paymentChargeService;
   @Autowired private PaymentRepository paymentRepository;
   @Autowired private OutboxRecordRepository outboxRecordRepository;
+  @Autowired private ObjectMapper objectMapper;
 
   @Test
   void sameChargeDeliveredFiveTimesConcurrentlyProducesOnePaymentAndFiveIdenticalReplies()
@@ -82,10 +85,13 @@ class PaymentChargeConcurrencyIntegrationTest extends AbstractIntegrationTest {
             .toList();
     assertThat(replies).hasSize(CONCURRENT_DELIVERIES);
 
-    Set<Object> distinctPaymentIds = new HashSet<>();
+    // objectMapper here is the same Spring-managed ObjectMapper bean Hibernate's JSON column
+    // mapping now reuses (conveyor-common's HibernateJsonFormatMapperAutoConfiguration —
+    // BUGS.md BUG-0010) rather than an internally-built one that picked up jackson-module-scala
+    // from the test classpath, so nested payload content is consistently java.util.Map.
+    Set<JsonNode> distinctPaymentIds = new HashSet<>();
     for (OutboxRecord reply : replies) {
-      @SuppressWarnings("unchecked")
-      var payload = (java.util.Map<String, Object>) reply.getPayload().get("payload");
+      JsonNode payload = objectMapper.valueToTree(reply.getPayload()).get("payload");
       distinctPaymentIds.add(payload.get("paymentId"));
     }
     assertThat(distinctPaymentIds).as("all 5 replies reference the same paymentId").hasSize(1);
