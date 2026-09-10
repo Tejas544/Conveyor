@@ -133,6 +133,19 @@ make test           # ./mvnw test
 Integration tests spin up real PostgreSQL, MongoDB and Redpanda via
 Testcontainers — Docker must be running.
 
+## Observability
+
+```bash
+make observability-up   # Prometheus (9090), Tempo (3200/4317/4318), Grafana (3000, anonymous admin)
+```
+
+Every service always emits metrics (`/actuator/prometheus`) and traces
+(OTLP, sampled at 100% locally), regardless of whether this profile is
+running — `make observability-up` only starts something to receive them.
+Grafana auto-provisions both datasources and three dashboards (Saga Health,
+Pipeline Latency, Infrastructure) under the "Conveyor" folder. Config lives in
+`infra/observability/`; see `ARCHITECTURE.md` §11.
+
 ## Deployment
 
 Zero cloud cost, by design (see `ARCHITECTURE.md` ADR-13): kind/k3d + GHCR +

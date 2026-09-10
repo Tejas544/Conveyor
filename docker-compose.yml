@@ -4,6 +4,15 @@ x-service-defaults: &service-defaults
   restart: unless-stopped
   networks: [conveyor]
 
+# ARCHITECTURE.md §11 — always applied, not gated behind `--profile observability`,
+# so every log line carries traceId/spanId (the Phase 9 exit criterion) regardless
+# of whether Tempo is actually up to receive the export; an unreachable OTLP
+# endpoint just means spans are generated and MDC-enriched but never shipped
+# anywhere, which is harmless (async, fire-and-forget batch export).
+x-tracing-env: &tracing-env
+  MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:-1.0}
+  MANAGEMENT_OTLP_TRACING_ENDPOINT: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:-http://tempo:4318/v1/traces}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -96,6 +105,7 @@ services:
       # Local dev serves the stack over plain http://localhost; a Secure cookie would never
       # reach the browser there. Real deployments (behind HTTPS) leave this unset (default true).
       CONVEYOR_SECURITY_JWT_COOKIE_SECURE: "false"
+      <<: *tracing-env
     ports:
       - "8081:8081"
     depends_on:
@@ -114,6 +124,7 @@ services:
       DB_PASSWORD: ${INVENTORY_DB_PASSWORD:-inventory_service_local_dev_only}
       MONGO_URI: mongodb://${MONGO_INITDB_ROOT_USERNAME:-conveyor}:${MONGO_INITDB_ROOT_PASSWORD:-mongo_local_dev_only}@mongo:27017/inventory_service?authSource=admin
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      <<: *tracing-env
     ports:
       - "8082:8082"
     depends_on:
@@ -143,6 +154,7 @@ services:
       # start if `prod` is ever active alongside it, so this is safe to default on for local/demo
       # use. Override with an empty value to run without it.
       SPRING_PROFILES_ACTIVE: ${PAYMENT_SERVICE_PROFILES:-chaos}
+      <<: *tracing-env
     ports:
       - "8083:8083"
     depends_on:
@@ -160,6 +172,7 @@ services:
       DB_USERNAME: ${SAGA_DB_USER:-saga_orchestrator}
       DB_PASSWORD: ${SAGA_DB_PASSWORD:-saga_orchestrator_local_dev_only}
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      <<: *tracing-env
     ports:
       - "8084:8084"
     depends_on:
@@ -178,6 +191,7 @@ services:
       DB_PASSWORD: ${DISPATCH_DB_PASSWORD:-dispatch_service_local_dev_only}
       MONGO_URI: mongodb://${MONGO_INITDB_ROOT_USERNAME:-conveyor}:${MONGO_INITDB_ROOT_PASSWORD:-mongo_local_dev_only}@mongo:27017/dispatch_service?authSource=admin
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      <<: *tracing-env
     ports:
       - "8085:8085"
     depends_on:
@@ -186,10 +200,52 @@ services:
       redpanda: { condition: service_healthy }
     <<: *service-defaults
 
-  # Prometheus/Grafana/Jaeger arrive in Phase 9 (ARCHITECTURE.md §11) behind a
-  # `--profile observability` flag, once there is something real to wire them
-  # to. Deliberately not stubbed out here — see CLAUDE.md's rule against
-  # half-finished implementations.
+  # ARCHITECTURE.md §11/§15.1 — Prometheus + Grafana + Tempo, behind
+  # `--profile observability` so the default `docker compose up` stays light.
+  # The five app services above always emit metrics/traces (see x-tracing-env);
+  # this profile only controls whether anything is listening to receive them.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: [observability]
+    volumes:
+      - ./infra/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/observability/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    <<: *service-defaults
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    profiles: [observability]
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./infra/observability/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+    <<: *service-defaults
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: [observability]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Not nested under the mount above — see dashboards.yml's comment (BUGS.md).
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards-json:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus: { condition: service_started }
+      tempo: { condition: service_started }
+    <<: *service-defaults
 
 networks:
   conveyor: {}
@@ -197,3 +253,6 @@ networks:
 volumes:
   postgres-data: {}
   mongo-data: {}
+  prometheus-data: {}
+  tempo-data: {}
+  grafana-data: {}

@@ -1,10 +1,19 @@
-.PHONY: up down logs build test verify seed reset ps
+.PHONY: up down logs build test verify seed reset ps observability-up observability-down
 
 up:
 	docker compose up -d --build
 
 down:
 	docker compose down
+
+# ARCHITECTURE.md §11 (Phase 9): Prometheus + Grafana (localhost:3000, anonymous
+# admin) + Tempo, alongside the always-on five services. `make up` first if the
+# app containers aren't running yet.
+observability-up:
+	docker compose --profile observability up -d prometheus tempo grafana
+
+observability-down:
+	docker compose --profile observability stop prometheus tempo grafana
 
 reset:
 	docker compose down -v

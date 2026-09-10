@@ -1,0 +1,31 @@
+# Minimal single-binary Tempo config for the `observability` compose profile —
+# local disk storage, no object store, OTLP ingest only. ARCHITECTURE.md §11
+# names "Jaeger/Tempo" as the trace backend; Tempo is chosen here because it
+# speaks OTLP natively (no separate collector hop) and is what Grafana's own
+# trace-to-metrics/trace-to-logs correlation is built around.
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 24h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal

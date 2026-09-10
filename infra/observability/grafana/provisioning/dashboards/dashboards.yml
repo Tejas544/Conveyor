@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: conveyor
+    orgId: 1
+    folder: Conveyor
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      # Deliberately not nested under /etc/grafana/provisioning (a separate, read-only bind
+      # mount in docker-compose.yml): Docker can't create a mountpoint for a second bind mount
+      # inside a directory that is itself already a read-only bind mount (BUGS.md).
+      path: /var/lib/grafana/dashboards-json
+      foldersFromFilesStructure: false

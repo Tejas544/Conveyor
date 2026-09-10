@@ -1,0 +1,66 @@
+{
+  "title": "Conveyor / Pipeline Latency",
+  "uid": "conveyor-pipeline-latency",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "5s",
+  "tags": ["conveyor"],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Per-step duration, p95 (forward vs compensation)",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, step, direction) (rate(conveyor_saga_step_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{step}} ({{direction}})"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Per-step duration, p50 / p95 / p99 (table)",
+      "type": "table",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, step, direction) (rate(conveyor_saga_step_duration_seconds_bucket[5m])))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, step, direction) (rate(conveyor_saga_step_duration_seconds_bucket[5m])))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, step, direction) (rate(conveyor_saga_step_duration_seconds_bucket[5m])))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "HTTP request duration, p95, by service and route",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, application, uri) (rate(http_server_requests_seconds_bucket[5m])))",
+          "legendFormat": "{{application}} {{uri}}"
+        }
+      ]
+    }
+  ]
+}

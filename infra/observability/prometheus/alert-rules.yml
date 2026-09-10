@@ -1,0 +1,61 @@
+# PLAN.md Phase 9 deliverable: "any invariant violation, NEEDS_INTERVENTION > 0,
+# outbox lag > 60 s, DLQ non-empty." conveyor_invariant_violations_total does not
+# exist yet — conveyor-verifier is Phase 10 — but the rule is written now, ahead
+# of the metric, exactly as ARCHITECTURE.md §11 defines it; it simply never fires
+# until Phase 10 ships the exporter (see CONTEXT.md's Key Decisions Log).
+groups:
+  - name: conveyor.invariants
+    rules:
+      - alert: InvariantViolation
+        expr: increase(conveyor_invariant_violations_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Invariant {{ $labels.invariant }} violated"
+          description: >-
+            conveyor-verifier recorded at least one violation of invariant
+            {{ $labels.invariant }} in the last 5 minutes. This is a
+            correctness bug, not an infrastructure alert.
+
+  - name: conveyor.saga
+    rules:
+      - alert: SagaNeedsIntervention
+        expr: conveyor_saga_needs_intervention > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} saga(s) stuck in NEEDS_INTERVENTION"
+          description: >-
+            At least one saga exhausted its compensation retry budget
+            (ARCHITECTURE.md §7.4) and is waiting for an operator to call
+            POST /sagas/{id}/retry. INV-SAGA-04 requires this to be zero.
+
+  - name: conveyor.outbox
+    rules:
+      - alert: OutboxPublishLagHigh
+        expr: conveyor_outbox_lag_seconds > 60
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox publish lag above 60s on {{ $labels.application }}"
+          description: >-
+            The oldest unpublished outbox row on {{ $labels.application }} is
+            more than 60 seconds old (INV-BOX-01). Either the poller has
+            stalled or Kafka is unreachable.
+
+  - name: conveyor.dlq
+    rules:
+      - alert: DeadLetterQueueNonEmpty
+        expr: increase(conveyor_dlq_messages_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Message(s) landed on {{ $labels.topic }}"
+          description: >-
+            At least one message was republished to a dead-letter topic in
+            the last 5 minutes — a consumer is failing repeatedly on it
+            (ARCHITECTURE.md §9 / dispatch-service's retry-then-DLQ handler).
