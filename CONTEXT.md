@@ -173,25 +173,28 @@ its own live-compose exit criterion still open on the same disk-space issue.
   Blockers) rather than anything left to build or fix in the code.
 
 ## Blockers
-- **The host `C:` drive is completely full (226 GB / 226 GB used, 0 bytes
-  free) — BUG-0007 recurring**, discovered this session via `df -h` right
-  after the `e2e` module's live run failed with what initially looked like
-  fresh Docker Desktop/WSL2 disk corruption (`input/output error` writing
-  containerd's own metadata database). The full disk is almost certainly the
-  actual cause of that symptom, not new corruption — see BUGS.md BUG-0007 and
-  BUG-0008's latest updates for the full reasoning. This blocks only the
-  `e2e` module's live multi-container run and Phase 6's still-open live
-  `docker compose` smoke test; `./mvnw verify` itself (Testcontainers-only,
-  much smaller footprint) ran clean at 135/135 earlier in this same session.
-  Not something to hunt through and free up unilaterally on a system drive
-  outside this repo (`CLAUDE.md`'s guidance on host-wide risky actions) —
-  this project's own Docker footprint (images/volumes) is nowhere near large
-  enough to explain 226 GB.
-  **Unblocks when:** the human frees space on `C:`, or points Docker
-  Desktop's data root at `D:` (160 GB free). Then:
-  `mvn -f e2e/pom.xml verify -DskipE2E=false` closes Phase 7's full-pipeline
-  exit criterion, and re-running `docker compose up -d --build` closes
-  Phase 6's still-open one too.
+- **Docker Desktop's containerd metadata store appears corrupted, independent
+  of the disk-space issue that likely caused it.** `C:` was found completely
+  full this session (226 GB / 226 GB used, 0 bytes free — BUG-0007 recurring)
+  and has since recovered to 3.5 GB free, but `docker system df`/`docker ps`/
+  `docker rm` all still fail with `input/output error` writing
+  `io.containerd.metadata.v1.bolt/meta.db` — the same error seen while the
+  disk was full, now persisting after space was freed. Most likely a torn
+  write from the full-disk period corrupted that database file on disk;
+  freeing space doesn't retroactively repair it. See BUGS.md BUG-0007/BUG-0008
+  for the full timeline. This blocks only the `e2e` module's live
+  multi-container run and Phase 6's still-open live `docker compose` smoke
+  test; `./mvnw verify` itself (Testcontainers-only, much smaller Docker
+  footprint) ran clean at 135/135 earlier in this same session and is
+  unaffected. Not something to force-repair unilaterally — a plain Docker
+  Desktop restart is the first thing to try; `wsl --unregister
+  docker-desktop-data` (wipes all Docker state machine-wide, not just this
+  project's) is the escalation per BUG-0002, and that choice is the human's.
+  **Unblocks when:** the human restarts Docker Desktop (escalating to the
+  `wsl --unregister` step if `docker ps`/`docker system df` still error
+  afterward). Then: `mvn -f e2e/pom.xml verify -DskipE2E=false` closes Phase
+  7's full-pipeline exit criterion, and re-running `docker compose up -d
+  --build` closes Phase 6's still-open one too.
 
 ## Next Steps
 1. Once `C:` has room: run `mvn -f e2e/pom.xml verify -DskipE2E=false` and

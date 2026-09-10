@@ -294,6 +294,21 @@ Format for each entry:
   **Unblocks when:** the human frees space on `C:` (or points Docker Desktop's data root at a drive
   with room — `D:` has 160 GB free on this machine) and `mvn -f e2e/pom.xml verify -DskipE2E=false`
   then runs clean.
+- **Update (2026-09-10, same session, later still):** `C:` recovered to 3.5 GB free (99% used, still
+  tight but no longer zero) — but Docker itself did **not** self-heal. `docker system df` and
+  `docker rm` on the orphaned `testcontainers-ryuk` container left over from the failed run both
+  still fail with the identical `input/output error` writing `io.containerd.metadata.v1.bolt/meta.db`
+  seen while the disk was full. This means freeing space alone does not fix it this time: the
+  containerd metadata database most likely suffered a **torn write** while `C:` was at 0 bytes free
+  and is now corrupted on disk, independent of space being available again. A restart of Docker
+  Desktop is the next thing to try; if that doesn't clear the `meta.db` error, the
+  `wsl --unregister docker-desktop-data` step from BUG-0002 (which discards Docker Desktop's backing
+  disk and rebuilds it clean — all images/containers/volumes for every project on this machine, not
+  just Conveyor) is the escalation, and that is the human's call to make, not something to run
+  unilaterally.
+  **Unblocks when:** the human restarts Docker Desktop (and if `docker system df`/`docker ps` still
+  error afterward, applies the `wsl --unregister` step); then `mvn -f e2e/pom.xml verify
+  -DskipE2E=false` closes Phase 7's last exit criterion.
 
 ## [BUG-0007] Host C: drive full — `docker compose up --build` fails, blocking Phase 3's live health check
 - **Date:** 2026-09-10
