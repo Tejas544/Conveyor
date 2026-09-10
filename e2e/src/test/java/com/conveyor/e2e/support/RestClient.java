@@ -8,6 +8,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Map;
 
 /**
  * A minimal, dependency-light HTTP client for the e2e suite — deliberately not Spring's {@code
@@ -37,6 +38,17 @@ public final class RestClient {
 
   public static JsonResponse post(String url, Object bodyObject, String idempotencyKey)
       throws IOException, InterruptedException {
+    return post(url, bodyObject, idempotencyKey, Map.of());
+  }
+
+  /**
+   * {@code extraHeaders} exists for {@code TraceContextPropagationE2ETest}: a caller-supplied
+   * W3C {@code traceparent} header lets the test pin the trace ID the whole pipeline will share,
+   * rather than having to discover it after the fact.
+   */
+  public static JsonResponse post(
+      String url, Object bodyObject, String idempotencyKey, Map<String, String> extraHeaders)
+      throws IOException, InterruptedException {
     String json = OBJECT_MAPPER.writeValueAsString(bodyObject);
     HttpRequest.Builder builder =
         HttpRequest.newBuilder(URI.create(url))
@@ -45,6 +57,7 @@ public final class RestClient {
     if (idempotencyKey != null) {
       builder.header("Idempotency-Key", idempotencyKey);
     }
+    extraHeaders.forEach(builder::header);
     return send(builder.build());
   }
 
