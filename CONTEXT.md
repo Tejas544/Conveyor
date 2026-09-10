@@ -1,4 +1,4 @@
-# Context — Last updated: 2026-09-10 (Phase 7 session)
+# Context — Last updated: 2026-09-10 (Phase 7 session, Docker-recovery attempt)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
@@ -167,42 +167,59 @@ its own live-compose exit criterion still open on the same disk-space issue.
   criterion remains unverified — see Blockers.
 
 ## In Progress
-- **Nothing mid-flight.** `./mvnw verify` is green (135/135, full reactor),
-  independently reconfirmed live this session. The only remaining action for
-  Phase 7 is the `e2e` module's own live run, blocked on host disk space (see
-  Blockers) rather than anything left to build or fix in the code.
+- **Nothing mid-flight.** `./mvnw verify` is green (135/135, full reactor).
+  The only remaining action for Phase 7 is the `e2e` module's own live run,
+  blocked on host disk space again this session (see Blockers) — attempted
+  live, got further than ever before (both compose stacks' image builds and
+  the first stack's boot), but still didn't finish.
 
 ## Blockers
-- **Docker Desktop's containerd metadata store appears corrupted, independent
-  of the disk-space issue that likely caused it.** `C:` was found completely
-  full this session (226 GB / 226 GB used, 0 bytes free — BUG-0007 recurring)
-  and has since recovered to 3.5 GB free, but `docker system df`/`docker ps`/
-  `docker rm` all still fail with `input/output error` writing
-  `io.containerd.metadata.v1.bolt/meta.db` — the same error seen while the
-  disk was full, now persisting after space was freed. Most likely a torn
-  write from the full-disk period corrupted that database file on disk;
-  freeing space doesn't retroactively repair it. See BUGS.md BUG-0007/BUG-0008
-  for the full timeline. This blocks only the `e2e` module's live
-  multi-container run and Phase 6's still-open live `docker compose` smoke
-  test; `./mvnw verify` itself (Testcontainers-only, much smaller Docker
-  footprint) ran clean at 135/135 earlier in this same session and is
-  unaffected. Not something to force-repair unilaterally — a plain Docker
-  Desktop restart is the first thing to try; `wsl --unregister
-  docker-desktop-data` (wipes all Docker state machine-wide, not just this
-  project's) is the escalation per BUG-0002, and that choice is the human's.
-  **Unblocks when:** the human restarts Docker Desktop (escalating to the
-  `wsl --unregister` step if `docker ps`/`docker system df` still error
-  afterward). Then: `mvn -f e2e/pom.xml verify -DskipE2E=false` closes Phase
-  7's full-pipeline exit criterion, and re-running `docker compose up -d
-  --build` closes Phase 6's still-open one too.
+- **`C:` disk space, recurring for the third session in a row (BUG-0007), now
+  confirmed to be the root cause behind every distinct Docker symptom seen
+  across BUG-0007/BUG-0008's history** — CLI hangs, BuildKit RPC deaths,
+  containerd I/O errors, and, this session, a Maven Central download
+  truncated mid-transfer inside a container build. This session started with
+  Docker genuinely healthy (`docker ps`/`docker system df` responded cleanly,
+  `C:` at 4.6 GB free) — a real recovery, not a false start — and
+  `docker builder prune -af` freed 26.43 GB of BuildKit cache as a precaution.
+  The live `mvn -f e2e/pom.xml verify -DskipE2E=false` run then got further
+  than any prior attempt: all five service images built, and the first
+  compose stack (`HappyPathAndInventoryCompensationE2ETest`) came up and ran
+  for 273 s before failing; the second stack
+  (`PaymentDeclineCompensationE2ETest`) then also failed after 648 s. `df -h`
+  immediately after showed `C:` at **260 MB free, 100% used** — the run
+  itself consumed the 4.6 GB of headroom that was there at the start — and
+  `docker system df`/`docker ps`/`docker info` were back to erroring (`500
+  Internal Server Error` from the Docker Desktop Linux engine pipe). Full
+  detail in BUGS.md BUG-0007's latest update. **This blocks the `e2e`
+  module's live multi-container run and Phase 6's still-open live `docker
+  compose` smoke test; `./mvnw verify` itself (Testcontainers-only, much
+  smaller footprint) is unaffected and stays green at 135/135.** Not
+  something to force-repair unilaterally: identifying/freeing whatever is
+  filling `C:` outside Docker's own ~5 GB footprint, or moving Docker
+  Desktop's data root to `D:` (160 GB free) to remove this failure class
+  structurally, and the `wsl --unregister docker-desktop-data` escalation if
+  needed, are all the human's call per their own explicit instruction this
+  session.
+  **Unblocks when:** `C:` has enough sustained headroom (this run alone
+  consumed >4.3 GB beyond the ~5 GB already resident) to survive one full
+  5-image compose build plus two sequential live stacks without running out
+  mid-build — moving Docker's data root to `D:` is the durable fix, freeing
+  `C:` by hand is the one-off fix. Then re-run `mvn -f e2e/pom.xml verify
+  -DskipE2E=false`; if it passes, `docker compose up -d --build` for Phase
+  6's still-open exit criterion is very likely satisfied for free by the same
+  underlying stack coming up healthy.
 
 ## Next Steps
-1. Once `C:` has room: run `mvn -f e2e/pom.xml verify -DskipE2E=false` and
-   confirm both E2E test classes (happy path + insufficient-stock compensation
-   on one compose stack, payment-decline compensation on a second) pass
-   against the real containers.
+1. Once `C:` has *sustained* room (not just enough to start): run
+   `mvn -f e2e/pom.xml verify -DskipE2E=false` again and confirm both E2E test
+   classes (happy path + insufficient-stock compensation on one compose
+   stack, payment-decline compensation on a second) pass against the real
+   containers, start to finish.
 2. Only then: check off Phase 7's remaining exit criteria in `PLAN.md`, mark
-   it complete in this file, and move to Phase 8 (Live ops dashboard).
+   it complete in this file, and move to Phase 8 (Live ops dashboard). Per
+   `CLAUDE.md` §2.2, Phase 8 has **not** been started yet — Phase 7 isn't
+   marked complete.
 3. Separately, revisit Phase 6's still-open live `docker compose` smoke test
    — likely satisfied for free once (1) brings the same stack up healthy.
 

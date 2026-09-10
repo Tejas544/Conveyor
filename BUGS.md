@@ -309,6 +309,49 @@ Format for each entry:
   **Unblocks when:** the human restarts Docker Desktop (and if `docker system df`/`docker ps` still
   error afterward, applies the `wsl --unregister` step); then `mvn -f e2e/pom.xml verify
   -DskipE2E=false` closes Phase 7's last exit criterion.
+- **Update (2026-09-10, new session — the one where the human reported Docker "working"):** at
+  session start `docker ps`/`docker system df` both responded cleanly (client 29.7.2, 15 images,
+  0 running containers) and `C:` had recovered to 4.6 GB free — genuinely healthy, not a false
+  start. `docker builder prune -af` reclaimed 26.43 GB from the BuildKit cache as a precaution before
+  the live run (host `C:` free space did not change afterward, confirming the VHDX is dynamically
+  sized and doesn't shrink on reclaim — expected, not a symptom). `mvn -f e2e/pom.xml verify
+  -DskipE2E=false` was then run live: image builds for all five services progressed correctly (this
+  is further than several recent attempts got), a compose stack for the first scenario
+  (`HappyPathAndInventoryCompensationE2ETest`) came up and ran for 273 s before erroring, and the
+  second scenario's stack (`PaymentDeclineCompensationE2ETest`) then also errored after 648 s — both
+  with `ContainerLaunch Local Docker Compose exited abnormally with code 1 whilst running command:
+  compose up -d --build`. The proximate cause visible in the build log:
+  `org.eclipse.aether.resolution.DependencyResolutionException: ... org.hibernate.orm:hibernate-core:jar:6.6.53.Final
+  ... Premature end of Content-Length delimited message body (expected: 12,093,295; received:
+  2,541,760)` — a Maven Central download truncated mid-transfer inside one of the image builds'
+  `dependency:go-offline` step. Immediately after the failure, `df -h` showed `C:` at **260 MB free,
+  100% used** (down from the healthy 4.6 GB at session start — the run itself consumed the
+  difference, consistent with every prior occurrence of BUG-0007) and `docker system df`/`docker
+  ps`/`docker info` all returned `request returned 500 Internal Server Error ... check if the server
+  supports the requested API version` from the Docker Desktop Linux engine pipe — the daemon-level
+  symptom already on record above. Reframing: the "Premature end of Content-Length" Maven error is
+  almost certainly **also** a disk-full symptom, not an independent network blip — a local write
+  failing partway through an HTTP body transfer while the backing disk has no room left produces
+  exactly this shape of error from Maven's HTTP client. So this is BUG-0007 recurring a third time in
+  as many sessions, now with a fourth distinct proximate symptom (truncated in-container downloads,
+  on top of the CLI hang / BuildKit RPC death / containerd I/O errors already on record), all
+  downstream of the same root cause: **whatever is filling `C:` outside this project's own Docker
+  footprint does so fast enough that even a session that starts with several GB of headroom runs out
+  of it partway through one live multi-service compose build.** Not fixed here — per the human's own
+  instruction this session, the `wsl --unregister docker-desktop-data` escalation (which would wipe
+  Docker state machine-wide, not just Conveyor's) is explicitly their call, not something to run
+  unilaterally, and a plain Docker Desktop restart cannot be triggered from this shell session either
+  (no GUI access). Phase 7's e2e exit criterion remains genuinely open — not marked done, per
+  `CLAUDE.md` §2.5. Phase 8 was **not** started this session as a direct consequence, per `CLAUDE.md`
+  §2.2 ("don't start phase N+1 before phase N is marked complete in `CONTEXT.md`").
+  **Unblocks when:** the human (a) identifies and frees whatever is actually filling `C:` outside
+  Docker's own ~5 GB image/volume footprint — the recurring pattern across BUG-0007's entire history
+  says this is not Conveyor's or even Docker Desktop's own state — ideally with enough headroom to
+  survive a full 5-image compose build (worked out to consuming at least ~4.3 GB beyond the 5 GB
+  already resident this run), or (b) points Docker Desktop's data root at `D:` (160 GB free) instead
+  of `C:` entirely, which would remove this class of failure structurally rather than requiring
+  repeated manual cleanup. Then restart Docker Desktop, confirm `docker ps`/`docker system df`
+  respond, and re-run `mvn -f e2e/pom.xml verify -DskipE2E=false`.
 
 ## [BUG-0007] Host C: drive full — `docker compose up --build` fails, blocking Phase 3's live health check
 - **Date:** 2026-09-10
