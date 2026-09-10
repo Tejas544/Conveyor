@@ -221,6 +221,19 @@ Format for each entry:
   **Unblocks when:** the human gets Docker Desktop stable through one full `docker compose up -d
   --build` of all five images; then a manually placed order can be confirmed to reach `CONFIRMED` via
   the REST API, closing Phase 6 for good.
+- **Update (2026-09-10, Phase 7 session):** the daemon was unresponsive from the very start of this
+  session — `docker version`/`docker ps` both hung past a 15s timeout repeatedly, checked several
+  times over the course of the session with no recovery. **Fifth+ distinct occurrence**, same
+  underlying instability, still not a Conveyor defect. Phase 7 was built code-complete regardless:
+  `./mvnw compile`/`test-compile` across the full 8-module reactor (dispatch-service's new
+  `OrderConfirmedListener`/`DispatchService`/DLQ error-handling config, `conveyor-contracts`'
+  `ShipmentCreatedPayload`, and the new top-level `e2e` module) plus `spotless:apply` and
+  `checkstyle:check` all pass clean — none of which touch Docker — but every Testcontainers-backed
+  dispatch-service test (happy path, contract, idempotency, retry-and-DLQ) and the entire `e2e` module
+  are **unverified this session**. Per CLAUDE.md §2.5, Phase 7 is not being marked complete in
+  `CONTEXT.md` until `./mvnw verify` and `mvn -pl e2e verify -DskipE2E=false` are both confirmed green.
+  **Unblocks when:** the human gets Docker Desktop responding again; then `./mvnw verify` (full
+  reactor) and the e2e module's own run close Phase 7 for good.
 
 ## [BUG-0007] Host C: drive full — `docker compose up --build` fails, blocking Phase 3's live health check
 - **Date:** 2026-09-10

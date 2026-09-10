@@ -1,18 +1,24 @@
-# Context — Last updated: 2026-09-10 (Phase 6 session)
+# Context — Last updated: 2026-09-10 (Phase 7 session)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 6 — Saga Orchestrator · Code complete, `./mvnw verify` green — blocked
-only on the live `docker compose` smoke test.** Every exit criterion has a
-passing test (21/21 new saga-orchestrator tests, 131/131 across the full
-7-module reactor). Phase 3 (Order Service) closed out for real this session —
-`docker compose up -d --build` was independently verified with all 8
-containers `Healthy` and all 5 `/actuator/health` endpoints `UP` — before a
-later re-attempt (for Phase 6's own compose exit criterion) hit the same
-Docker Desktop instability again; see Blockers.
+**Phase 7 — Dispatch/Notification Service and full-pipeline E2E · Code
+complete, `./mvnw verify` and the new `e2e` module are both unverified this
+session — Docker Desktop was unresponsive from the start (BUGS.md BUG-0008,
+fifth-plus occurrence).** `dispatch-service` now has a real
+`OrderConfirmedListener` → `DispatchService` consuming the saga's pivot event,
+publishing `ShipmentCreated`, and a Kafka retry-then-DLQ error handler; a new
+top-level `e2e` Maven module drives the whole stack over its public REST API
+only. Every exit criterion has a test written against it (see Key Decisions
+Log for what each test proves and the one deliberate scope decision on the
+third compensation path) — none of it has been *run* this session, so none of
+it is being marked complete per CLAUDE.md §2.5. Phase 6 (Saga Orchestrator)
+remains exactly where the last session left it: code complete,
+`./mvnw verify` green from that session, its own live-compose exit criterion
+still open on the same Docker issue.
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -146,36 +152,38 @@ Docker Desktop instability again; see Blockers.
   criterion remains unverified — see Blockers.
 
 ## In Progress
-- **Nothing mid-flight.** Phase 6's code and tests are done; the only
-  remaining action for either phase is the live compose smoke test, which is
-  blocked on the host's Docker Desktop instability, not on anything left to
-  build.
+- **Nothing mid-flight.** Phase 7's code and tests are written; the only
+  remaining action is running them — `./mvnw verify` (full reactor) and
+  `mvn -pl e2e verify -DskipE2E=false` — which needs a responsive Docker
+  daemon this session never got.
 
 ## Blockers
-- **Phase 6's live `docker compose` smoke test is blocked on the same
-  recurring Docker Desktop/WSL2 instability as before** (BUGS.md BUG-0008,
-  updated again this session with a fourth-plus distinct symptom). This
-  session actually *did* get a full clean run earlier — `docker compose down
-  -v` + `up -d --build` brought all 8 containers `Healthy` with all 5 health
-  endpoints `UP`, closing Phase 3 for good — but a later re-attempt (to
-  smoke-test Phase 6's saga flow through the real stack) hit BuildKit dying
-  mid-build again (`ClassFormatError` in two of the five build stages, then
-  `rpc error: code = Unavailable ... EOF`), and `docker ps`/`docker compose
-  ps` are back to hanging. Not something to restart/reset unilaterally per
-  `CLAUDE.md`'s guidance on host-wide risky actions.
-  **Unblocks when:** the human gets Docker Desktop through one clean
-  `docker compose up -d --build`; then `POST /api/v1/orders` through to
-  `GET /api/v1/sagas/{orderId}` showing `state: COMPLETED` closes Phase 6 for
-  good.
+- **Docker Desktop was unresponsive for this entire session** (BUGS.md
+  BUG-0008, now updated for a fifth-plus occurrence) — `docker version`/
+  `docker ps` both hung past a 15s timeout every time they were checked, with
+  no recovery observed. This blocks two independent things: Phase 6's
+  already-open live-compose smoke test (unchanged from last session), and
+  Phase 7's entire test suite, since dispatch-service's new tests are
+  Testcontainers-backed (need the daemon for Postgres/Redpanda/Mongo) and the
+  new `e2e` module needs `docker compose build` for all five images. Not
+  something to restart/reset unilaterally per `CLAUDE.md`'s guidance on
+  host-wide risky actions.
+  **Unblocks when:** the human gets Docker Desktop responding again. Then, in
+  order: (1) `./mvnw verify` for the full 8-module reactor — this alone closes
+  Phase 7's unit/integration-level exit criteria; (2)
+  `mvn -pl e2e verify -DskipE2E=false` — closes Phase 7's full-pipeline exit
+  criterion; (3) revisit Phase 6's still-open live `docker compose` smoke
+  test if not already covered by (2)'s stack coming up healthy.
 
 ## Next Steps
-1. Once Docker survives a full build: `docker compose up -d --build`, place
-   an order via `POST /api/v1/orders`, and confirm it reaches
-   `orders.status = CONFIRMED` / `GET /sagas/{orderId}` → `COMPLETED`. This is
-   the only thing left to mark Phase 6 complete.
-2. Begin Phase 7 — Dispatch/Notification Service and full-pipeline E2E
-   (`PLAN.md`). Its dependency (Phase 6's code, not the live-compose check) is
-   satisfied, so this can start without waiting on item 1.
+1. Once Docker responds: run `./mvnw verify` (full reactor, all 8 modules)
+   and confirm dispatch-service's four new test classes are green alongside
+   everything already passing.
+2. Run `mvn -pl e2e verify -DskipE2E=false` and confirm both E2E test classes
+   (happy path + insufficient-stock compensation on one compose stack,
+   payment-decline compensation on a second) pass against the real containers.
+3. Only then: check off Phase 7's exit criteria in `PLAN.md`, mark it complete
+   in this file, and move to Phase 8 (Live ops dashboard).
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -398,6 +406,47 @@ Full reasoning for each is in `ARCHITECTURE.md` §3.
   AWS-dependent and is unaffected. Full reasoning in `ARCHITECTURE.md` ADR-13;
   the original costed AWS path is retained as a documented, not-executed
   fallback in `ARCHITECTURE.md` §15.4 and `PLAN.md` Phase 14.
+- **Phase 7 — dispatch's two stores use two different idempotency mechanisms,
+  not one shared inbox.** `recordShipment` (Postgres) is inbox-guarded exactly
+  like every other consumer. `writeNotification` (Mongo) instead upserts a
+  document whose `_id` is a deterministic `orderId:ORDER_CONFIRMED` string —
+  Mongo has no shared transaction with the Postgres inbox table, so rather
+  than trying to fake atomicity across two databases, the write itself is made
+  idempotent (same input → same final document, redelivery or not). This is
+  what PLAN.md's "the Mongo write retried independently" means in practice.
+- **Phase 7 — the Kafka retry-then-DLQ error handler
+  (`dispatch-service/config/KafkaErrorHandlingConfig`) is scoped to
+  dispatch-service alone, not added to conveyor-common.** Dispatch is the one
+  consumer in this project whose failure has no saga-level compensation to
+  fall back on — inventory/payment/saga-orchestrator's own failure handling is
+  the saga timeout/compensation machinery, and giving them an independent
+  bounded-retry-then-give-up path on top would be a second, conflicting
+  failure-handling mechanism. `<topic>.dlq` (1 partition) is declared as a
+  `NewTopic` bean rather than relying on auto-creation, so the recoverer can
+  always target partition 0 regardless of the source topic's partition count.
+- **Phase 7 — the `e2e` module's three required scenarios are split across two
+  `docker compose` stacks, and the third compensation path ("payment succeeds,
+  then an operator aborts anyway") is deliberately *not* re-proven there.**
+  Happy path and insufficient-stock compensation run organically against the
+  default stack; payment-decline compensation needs
+  `CONVEYOR_PAYMENT_GATEWAY_DECLINE_RATE=1` for *every* charge, so it runs
+  against a second stack (a new, default-`0`, harmless passthrough added to
+  `docker-compose.yml`'s payment-service block for exactly this). The operator-
+  abort path requires racing the saga's own pivot commit (abort must land
+  between `PaymentCharged` and the pivot's `OrderConfirmed` publish) — no
+  chaos/delay hook exists at that exact point, and racing it over a live
+  compose network path would make the suite flaky by construction. That path
+  is already covered deterministically at the service level by
+  `saga-orchestrator`'s `SagaCompensationIntegrationTest` from Phase 6; the e2e
+  suite's job is proving the pipeline is wired end to end, not re-deriving an
+  invariant a faster, non-flaky test already establishes.
+- **Phase 7 — the `e2e` module is excluded from the default `./mvnw verify`**
+  (`skipTests` defaults true via its own `skipE2E` property) and instead runs
+  in a dedicated `e2e` job in `build.yml`, the same reasoning Phase 1's
+  `kafka-compat` job split applies: it needs `docker compose build` for all
+  five images plus real wall-clock time no other module's Testcontainers suite
+  needs, so it would slow down every ordinary `verify` run for a check CI can
+  run in parallel instead.
 
 ## Discrepancies against `PROJECT_BRIEF.md`
 Per `CLAUDE.md` §0, logged rather than silently edited into the brief.
