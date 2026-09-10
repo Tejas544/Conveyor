@@ -26,7 +26,8 @@ class SchemaValidatorTest {
           "items": [{ "sku": "SKU-1042", "quantity": 2, "unitPrice": 9.99 }],
           "totalAmount": 19.98,
           "currency": "USD",
-          "shippingAddress": { "line1": "1 Test St", "city": "Testville", "postalCode": "00000", "country": "IN" }
+          "shippingAddress": { "line1": "1 Test St", "city": "Testville", "postalCode": "00000", "country": "IN" },
+          "paymentMethodToken": "tok_test_visa"
         }
       }
       """;

@@ -12,7 +12,7 @@
         "schemaVersion": { "const": 1 },
         "payload": {
           "type": "object",
-          "required": ["customerId", "items", "totalAmount", "currency", "shippingAddress"],
+          "required": ["customerId", "items", "totalAmount", "currency", "shippingAddress", "paymentMethodToken"],
           "properties": {
             "customerId": { "type": "string", "format": "uuid" },
             "items": {
@@ -41,7 +41,8 @@
                 "country": { "type": "string", "minLength": 1 }
               },
               "additionalProperties": false
-            }
+            },
+            "paymentMethodToken": { "type": "string", "minLength": 1 }
           },
           "additionalProperties": false
         }

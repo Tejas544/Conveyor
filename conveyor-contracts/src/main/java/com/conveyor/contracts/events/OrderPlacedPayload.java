@@ -13,7 +13,8 @@ public record OrderPlacedPayload(
     List<OrderItemPayload> items,
     BigDecimal totalAmount,
     String currency,
-    ShippingAddressPayload shippingAddress) {
+    ShippingAddressPayload shippingAddress,
+    String paymentMethodToken) {
 
   public static final String EVENT_TYPE = "OrderPlaced";
   public static final int SCHEMA_VERSION = 1;

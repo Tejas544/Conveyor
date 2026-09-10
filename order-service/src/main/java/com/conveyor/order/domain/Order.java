@@ -53,6 +53,9 @@ public class Order {
   @Column(name = "idempotency_key")
   private String idempotencyKey;
 
+  @Column(name = "payment_method_token")
+  private String paymentMethodToken;
+
   @Version private long version;
 
   @CreationTimestamp
@@ -83,6 +86,18 @@ public class Order {
       String currency,
       Map<String, Object> shippingAddress,
       String idempotencyKey) {
+    this(id, customerId, status, totalAmount, currency, shippingAddress, idempotencyKey, null);
+  }
+
+  public Order(
+      UUID id,
+      UUID customerId,
+      OrderStatus status,
+      BigDecimal totalAmount,
+      String currency,
+      Map<String, Object> shippingAddress,
+      String idempotencyKey,
+      String paymentMethodToken) {
     this.id = id;
     this.customerId = customerId;
     this.status = status;
@@ -90,6 +105,7 @@ public class Order {
     this.currency = currency;
     this.shippingAddress = shippingAddress;
     this.idempotencyKey = idempotencyKey;
+    this.paymentMethodToken = paymentMethodToken;
   }
 
   public UUID getId() {
@@ -137,6 +153,10 @@ public class Order {
 
   public String getIdempotencyKey() {
     return idempotencyKey;
+  }
+
+  public String getPaymentMethodToken() {
+    return paymentMethodToken;
   }
 
   public long getVersion() {

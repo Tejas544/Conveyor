@@ -83,7 +83,8 @@ public class OrderService {
             totalAmount,
             request.currency(),
             shippingAddress,
-            idempotencyKey);
+            idempotencyKey,
+            request.paymentMethodToken());
     for (CreateOrderItemRequest item : request.items()) {
       order.addItem(
           new OrderItem(UUID.randomUUID(), item.sku(), item.quantity(), item.unitPrice()));
@@ -132,7 +133,8 @@ public class OrderService {
                 request.shippingAddress().line1(),
                 request.shippingAddress().city(),
                 request.shippingAddress().postalCode(),
-                request.shippingAddress().country()));
+                request.shippingAddress().country()),
+            request.paymentMethodToken());
 
     ConveyorEnvelope<OrderPlacedPayload> envelope =
         ConveyorEnvelope.of(
