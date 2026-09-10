@@ -36,7 +36,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 class HappyPathAndInventoryCompensationE2ETest {
 
-  private static final String DB_URL = "jdbc:postgresql://localhost:5432/inventory_service";
   private static final String DB_USER = "inventory_service";
   private static final String DB_PASSWORD = "inventory_service_local_dev_only";
 
@@ -45,6 +44,7 @@ class HappyPathAndInventoryCompensationE2ETest {
       new ComposeContainer(new File("../docker-compose.yml"))
           .withLocalCompose(true)
           .withBuild(true)
+          .withExposedService("postgres", 5432, Wait.forListeningPort())
           .withExposedService(
               "order-service",
               8081,
@@ -80,7 +80,7 @@ class HappyPathAndInventoryCompensationE2ETest {
   @Test
   void placingAnOrderReachesConfirmedWithAShipmentAndANotification() throws Exception {
     String sku = "SKU-E2E-HAPPY-" + UUID.randomUUID().toString().substring(0, 8);
-    InventorySeed.seedStock(DB_URL, DB_USER, DB_PASSWORD, sku, 10);
+    InventorySeed.seedStock(dbUrl(), DB_USER, DB_PASSWORD, sku, 10);
 
     UUID orderId = placeOrder(sku, 2);
 
@@ -114,7 +114,7 @@ class HappyPathAndInventoryCompensationE2ETest {
   @Test
   void insufficientStockCancelsTheOrderWithoutEverChargingPayment() throws Exception {
     String sku = "SKU-E2E-SHORT-" + UUID.randomUUID().toString().substring(0, 8);
-    InventorySeed.seedStock(DB_URL, DB_USER, DB_PASSWORD, sku, 1);
+    InventorySeed.seedStock(dbUrl(), DB_USER, DB_PASSWORD, sku, 1);
 
     UUID orderId = placeOrder(sku, 5);
 
@@ -150,6 +150,20 @@ class HappyPathAndInventoryCompensationE2ETest {
   private String orderStatus(UUID orderId) throws Exception {
     JsonNode order = RestClient.get(orderUrl("/api/v1/orders/" + orderId)).body();
     return order.path("status").asText();
+  }
+
+  // docker-compose.yml publishes postgres on the host's own 5432, but that's not reliable to
+  // connect to directly from the test JVM: any other Postgres already bound to the host's 5432
+  // (e.g. a native install) silently wins that port, and this test's JDBC connection would
+  // authenticate against the wrong server instead of this stack's container. Going through
+  // Testcontainers' own dynamically-assigned mapped port, like every other exposed service in
+  // this class, sidesteps host port contention entirely.
+  private String dbUrl() {
+    return "jdbc:postgresql://"
+        + STACK.getServiceHost("postgres", 5432)
+        + ":"
+        + STACK.getServicePort("postgres", 5432)
+        + "/inventory_service";
   }
 
   private String orderUrl(String path) {

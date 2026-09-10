@@ -1,39 +1,12 @@
-# Context — Last updated: 2026-09-10 (Phase 7 session, Docker-recovery attempt)
+# Context — Last updated: 2026-09-10 (Phase 7 closed; Phase 8 starting)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 7 — Dispatch/Notification Service and full-pipeline E2E · `./mvnw
-verify` green (135/135, full 8-module reactor) — blocked only on the `e2e`
-module's own live `docker compose` run.** `dispatch-service` now has a real
-`OrderConfirmedListener` → `DispatchService` consuming the saga's pivot event
-(inbox-guarded `shipments` row in Postgres; an idempotent-by-construction
-Mongo upsert for the notification log — see Key Decisions Log for why two
-different idempotency mechanisms), publishing `ShipmentCreated` via the
-outbox, and a Kafka retry-then-DLQ error handler scoped to this service alone.
-`GET /shipments/{orderId}`, `GET /notifications?orderId=`. **4/4 new
-dispatch-service test classes green**, including the retry-and-DLQ test (a
-poison message is retried per its `FixedBackOff`, republished to
-`conveyor.order.events.v1.dlq`, `conveyor_dlq_messages_total` increments, and
-the next order on the same partition is unaffected) — independently
-reconfirming this session, not trusted from compilation alone.
-
-A new `e2e` module (Testcontainers' Docker Compose, driving only the public
-REST API) covers the happy path plus two of the three required compensation
-paths for real, over two live compose stacks; a third stack scenario is
-deliberately not attempted (see Key Decisions Log). One real bug was found and
-fixed building it: adding `e2e` to the root reactor broke every service's
-Dockerfile build (BUGS.md BUG-0013). After that fix, the module's own live run
-got correctly past dependency resolution into the actual image builds before
-failing with what first looked like Docker Desktop/WSL2 disk corruption —
-`df -h` immediately after showed the actual cause: **the host `C:` drive is
-full again (226 GB / 226 GB used, 0 bytes free — BUG-0007 recurring)**, not
-new corruption. Not fixable from here; needs the human to free space on `C:`
-or move Docker Desktop's data root to `D:` (160 GB free). Phase 6 (Saga
-Orchestrator) remains exactly where the last session left it: code complete,
-its own live-compose exit criterion still open on the same disk-space issue.
+**Phase 8 — Live ops dashboard (starting).** Phase 7 and Phase 6's last open
+exit criterion are both closed this session — see Completed Phases.
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -137,91 +110,85 @@ its own live-compose exit criterion still open on the same disk-space issue.
   volume predating `saga-orchestrator`'s role): `docker compose down -v` +
   `up -d --build` → all 8 containers `Healthy`, all 5 `/actuator/health`
   endpoints `UP`, confirmed live with `curl`.
-- Phase 6 — Saga Orchestrator: **code complete, `./mvnw verify` green, live
-  `docker compose` smoke test blocked** (2026-09-10). `saga-orchestrator`
-  now has a real `SagaOrchestrationService` driving `OrderPlacedListener` →
-  `ReserveInventory` → (reply) → `ChargePayment` → (reply) → the pivot
-  (`tryConfirm`, its own transaction — see that class's Javadoc for why) →
-  `OrderConfirmed`; every compensation path (`InventoryReservationFailed`,
-  `PaymentFailed`, and an operator-initiated `POST /sagas/{id}/abort` for the
-  "payment succeeded, then abort anyway" path — see Key Decisions Log for why
-  that's the legitimate trigger, not a blind timeout-driven refund);
-  `SagaTimeoutSweeper` (`FOR UPDATE SKIP LOCKED`, same pattern as
-  `OutboxPoller`) claims expired non-terminal sagas every `sweep-interval` and
-  applies §7.4's timeout policy, escalating to `NEEDS_INTERVENTION` after
-  `max-compensation-attempts`; `POST /sagas/{id}/retry` re-drives it.
-  `GET /sagas/{orderId}`, `GET /sagas?state=&stuck=true`. All 5 saga metrics
-  from §11 wired (`conveyor_saga_active` as a live gauge over
-  `saga_instances`, not a counter). Two chaos points wired
-  (`saga.after-reply-before-state-write`, `saga.after-state-write-before-command`).
-  Closed a real spec gap along the way — `OrderPlaced` never carried
-  `paymentMethodToken` (BUG-0011) — by threading it through `Order`,
-  `OrderPlacedPayload`, and its schema, plus a small
-  `Order`/`OrderPlacedPayload` migration. **21/21 new tests green**
-  (`SagaHappyPathIntegrationTest`, `SagaCompensationIntegrationTest` ×3,
-  `SagaTimeoutIntegrationTest` ×2, `SagaIdempotencyIntegrationTest`,
-  `SagaConcurrentSweepIntegrationTest`, `SagaCommandAndEventContractTest` ×2,
-  `SagaControllerIntegrationTest` ×3, plus the 4 pre-existing scaffold tests),
-  **131/131 across the full reactor** (`./mvnw verify`). Only the live
-  `docker compose up` → "a manually placed order reaches `CONFIRMED`" exit
-  criterion remains unverified — see Blockers.
+- Phase 6 — Saga Orchestrator ✅ (2026-09-10, live exit criterion closed this
+  session). `saga-orchestrator` has a real `SagaOrchestrationService` driving
+  `OrderPlacedListener` → `ReserveInventory` → (reply) → `ChargePayment` →
+  (reply) → the pivot (`tryConfirm`, its own transaction — see that class's
+  Javadoc for why) → `OrderConfirmed`; every compensation path
+  (`InventoryReservationFailed`, `PaymentFailed`, and an operator-initiated
+  `POST /sagas/{id}/abort` for the "payment succeeded, then abort anyway"
+  path — see Key Decisions Log for why that's the legitimate trigger, not a
+  blind timeout-driven refund); `SagaTimeoutSweeper` (`FOR UPDATE SKIP
+  LOCKED`, same pattern as `OutboxPoller`) claims expired non-terminal sagas
+  every `sweep-interval` and applies §7.4's timeout policy, escalating to
+  `NEEDS_INTERVENTION` after `max-compensation-attempts`; `POST
+  /sagas/{id}/retry` re-drives it. `GET /sagas/{orderId}`, `GET
+  /sagas?state=&stuck=true`. All 5 saga metrics from §11 wired
+  (`conveyor_saga_active` as a live gauge over `saga_instances`, not a
+  counter). Two chaos points wired (`saga.after-reply-before-state-write`,
+  `saga.after-state-write-before-command`). Closed a real spec gap along the
+  way — `OrderPlaced` never carried `paymentMethodToken` (BUG-0011). **21/21
+  new tests green**, **131/131 across the full reactor** at the time. The
+  live `docker compose up` → "a manually placed order reaches `CONFIRMED`"
+  exit criterion — the one thing left open — was verified for real this
+  session: all 8 containers `Healthy`, all 5 `/actuator/health` `UP`, a
+  manually seeded SKU + `POST /orders` reached `orders.status = CONFIRMED` on
+  the first poll, with a real shipment row and notification document
+  observed via dispatch-service's own endpoints.
+- Phase 7 — Dispatch/Notification Service and full-pipeline E2E ✅
+  (2026-09-10). `dispatch-service` has a real `OrderConfirmedListener` →
+  `DispatchService` consuming the saga's pivot event (inbox-guarded
+  `shipments` row in Postgres; an idempotent-by-construction Mongo upsert for
+  the notification log — see Key Decisions Log for why two different
+  idempotency mechanisms), publishing `ShipmentCreated` via the outbox, and a
+  Kafka retry-then-DLQ error handler scoped to this service alone. `GET
+  /shipments/{orderId}`, `GET /notifications?orderId=`. 4/4 dispatch-service
+  test classes green, including the retry-and-DLQ test. `./mvnw verify` green
+  across the full 8-module reactor, 135/135. The `e2e` module (Testcontainers'
+  Docker Compose, driving only the public REST API) now runs green live too:
+  3/3 tests, `BUILD SUCCESS` — happy path + insufficient-stock compensation on
+  one compose stack, payment-decline compensation on a second. Two real bugs
+  found and fixed getting there: BUG-0013 (adding `e2e` to the root reactor
+  broke every service's Dockerfile build) and BUG-0014 (both E2E test classes
+  hardcoded `jdbc:postgresql://localhost:5432/...` for their direct-seeding
+  JDBC connection, which silently connected to one of **two native Windows
+  PostgreSQL services** already bound to that host port on this machine
+  instead of the stack's own container — fixed by routing through
+  Testcontainers' dynamically-assigned mapped port, the same pattern already
+  used for the five application services in the same test classes). The
+  disk-space blocker that stopped this same run twice in prior sessions
+  (BUG-0007) is resolved: the human moved Docker Desktop's data root off `C:`
+  onto `D:` (160 GB free), which is the durable fix, not a one-off cleanup.
+  The Definition-of-Done line "full happy-path order flow works end to end"
+  is now true, minus the dashboard — verified twice: once via the `e2e`
+  suite, once via a manual order against live `docker compose up`.
 
 ## In Progress
-- **Nothing mid-flight.** `./mvnw verify` is green (135/135, full reactor).
-  The only remaining action for Phase 7 is the `e2e` module's own live run,
-  blocked on host disk space again this session (see Blockers) — attempted
-  live, got further than ever before (both compose stacks' image builds and
-  the first stack's boot), but still didn't finish.
+- **Nothing mid-flight.** Phase 8 (Live ops dashboard) is starting fresh this
+  session.
 
 ## Blockers
-- **`C:` disk space, recurring for the third session in a row (BUG-0007), now
-  confirmed to be the root cause behind every distinct Docker symptom seen
-  across BUG-0007/BUG-0008's history** — CLI hangs, BuildKit RPC deaths,
-  containerd I/O errors, and, this session, a Maven Central download
-  truncated mid-transfer inside a container build. This session started with
-  Docker genuinely healthy (`docker ps`/`docker system df` responded cleanly,
-  `C:` at 4.6 GB free) — a real recovery, not a false start — and
-  `docker builder prune -af` freed 26.43 GB of BuildKit cache as a precaution.
-  The live `mvn -f e2e/pom.xml verify -DskipE2E=false` run then got further
-  than any prior attempt: all five service images built, and the first
-  compose stack (`HappyPathAndInventoryCompensationE2ETest`) came up and ran
-  for 273 s before failing; the second stack
-  (`PaymentDeclineCompensationE2ETest`) then also failed after 648 s. `df -h`
-  immediately after showed `C:` at **260 MB free, 100% used** — the run
-  itself consumed the 4.6 GB of headroom that was there at the start — and
-  `docker system df`/`docker ps`/`docker info` were back to erroring (`500
-  Internal Server Error` from the Docker Desktop Linux engine pipe). Full
-  detail in BUGS.md BUG-0007's latest update. **This blocks the `e2e`
-  module's live multi-container run and Phase 6's still-open live `docker
-  compose` smoke test; `./mvnw verify` itself (Testcontainers-only, much
-  smaller footprint) is unaffected and stays green at 135/135.** Not
-  something to force-repair unilaterally: identifying/freeing whatever is
-  filling `C:` outside Docker's own ~5 GB footprint, or moving Docker
-  Desktop's data root to `D:` (160 GB free) to remove this failure class
-  structurally, and the `wsl --unregister docker-desktop-data` escalation if
-  needed, are all the human's call per their own explicit instruction this
-  session.
-  **Unblocks when:** `C:` has enough sustained headroom (this run alone
-  consumed >4.3 GB beyond the ~5 GB already resident) to survive one full
-  5-image compose build plus two sequential live stacks without running out
-  mid-build — moving Docker's data root to `D:` is the durable fix, freeing
-  `C:` by hand is the one-off fix. Then re-run `mvn -f e2e/pom.xml verify
-  -DskipE2E=false`; if it passes, `docker compose up -d --build` for Phase
-  6's still-open exit criterion is very likely satisfied for free by the same
-  underlying stack coming up healthy.
+- **None currently open.** BUG-0007 (disk space) is resolved via the data-root
+  move to `D:`; BUG-0014 (E2E port conflict) is fixed in code. Worth knowing
+  for any future host-level Postgres work on this machine: **two native
+  Windows PostgreSQL services (`postgresql-x64-17`, `postgresql-x64-18`) are
+  permanently bound to host port 5432**, independent of Docker/Conveyor —
+  anything that assumes `localhost:5432` reaches this project's containerized
+  Postgres will hit them instead. `docker compose exec postgres psql ...` (or
+  Testcontainers' dynamic port mapping, as `e2e` now does) sidesteps this;
+  connecting from the host shell via a bare `psql -h localhost -p 5432` does
+  not.
 
 ## Next Steps
-1. Once `C:` has *sustained* room (not just enough to start): run
-   `mvn -f e2e/pom.xml verify -DskipE2E=false` again and confirm both E2E test
-   classes (happy path + insufficient-stock compensation on one compose
-   stack, payment-decline compensation on a second) pass against the real
-   containers, start to finish.
-2. Only then: check off Phase 7's remaining exit criteria in `PLAN.md`, mark
-   it complete in this file, and move to Phase 8 (Live ops dashboard). Per
-   `CLAUDE.md` §2.2, Phase 8 has **not** been started yet — Phase 7 isn't
-   marked complete.
-3. Separately, revisit Phase 6's still-open live `docker compose` smoke test
-   — likely satisfied for free once (1) brings the same stack up healthy.
+1. Phase 8 — Live ops dashboard (PLAN.md's Stage C): Vite + React 19 + strict
+   TS + Tailwind + shadcn/ui, kanban board by order state with SSE live
+   updates, per-order saga-step timeline, `useSagaStream` SSE hook with
+   `Last-Event-ID` resume, admin inventory panel, login screen (token
+   issuance — `POST /auth/login` — is now in scope; see Phase 4's Key
+   Decisions Log on why it was deferred until here), order-placement form
+   with a "make this one fail" control. Full exit criteria in `PLAN.md`
+   Phase 8.
+2. Phase 9 (Observability) may be interleaved with Phase 8 per `PLAN.md`.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile

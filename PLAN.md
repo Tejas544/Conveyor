@@ -296,10 +296,12 @@ recovery after a crash.
       SKIP LOCKED` claims against 10 expired sagas from two threads.)
 - [x] **Test:** duplicate reply delivery does not advance the saga twice.
       (`SagaIdempotencyIntegrationTest`.)
-- [ ] `docker compose up` → a manually placed order reaches `CONFIRMED`. **Blocked**
-      on this machine's recurring Docker Desktop/WSL2 instability (BUGS.md
-      BUG-0008, updated again this session) — not a code defect; `./mvnw verify`
-      is green for the full reactor including every test above.
+- [x] `docker compose up` → a manually placed order reaches `CONFIRMED`. Verified live
+      (2026-09-10, once BUG-0008's disk-space root cause was resolved by moving Docker
+      Desktop's data root off `C:`): all 8 containers `Healthy`, all 5 `/actuator/health`
+      endpoints `UP`, `POST /orders` on a manually seeded SKU reached `orders.status =
+      CONFIRMED` on the first poll, with a real shipment row and notification document
+      observed via `GET /shipments/{orderId}` and `GET /notifications?orderId=`.
 
 ---
 
@@ -320,15 +322,15 @@ automated suite that will be the regression net for everything after.
 **Dependencies.** Phase 6.
 
 **Exit criteria.**
-- [ ] **Test:** full E2E — REST call → shipment row → notification document →
+- [x] **Test:** full E2E — REST call → shipment row → notification document →
       `ShipmentCreated` on the topic. `DispatchHappyPathIntegrationTest` +
       `DispatchReplyContractTest` prove dispatch-service's own half of this
       (driven directly, per PLAN.md's "exercised by driving it directly"
-      convention) and are green. The literal REST-call-in variant is the
-      `e2e` module's `HappyPathAndInventoryCompensationE2ETest`, written and
-      compiling but **not yet run successfully** — see CONTEXT.md/BUGS.md
-      (Docker Desktop/WSL2 disk I/O corruption hit mid-build this session,
-      after dependency resolution succeeded; not a code defect).
+      convention) and are green. The literal REST-call-in variant,
+      `e2e` module's `HappyPathAndInventoryCompensationE2ETest`, now runs
+      green too (2026-09-10) — see BUGS.md BUG-0014 for the real bug found
+      and fixed along the way (hardcoded `localhost:5432` silently hit a
+      native Postgres install instead of the stack's own container).
 - [x] **Test:** dispatch is idempotent — redelivered `OrderConfirmed` → one
       shipment, one notification. (`DispatchIdempotencyIntegrationTest`,
       green.)
@@ -338,20 +340,22 @@ automated suite that will be the regression net for everything after.
       retried per the `FixedBackOff`, republished to
       `conveyor.order.events.v1.dlq`, `conveyor_dlq_messages_total` increments,
       and the very next order on the same partition is unaffected.)
-- [ ] **Test:** the E2E suite covers happy path + all three compensation paths
-      and runs in CI. Code-complete (`e2e` module, two compose scenarios,
-      dedicated `build.yml` job) — **blocked on the same live-run issue as
-      above**, not written. Two of the three compensation paths (insufficient
-      stock; payment decline) are organic REST-only scenarios in this module;
-      the third ("payment succeeds, then an operator aborts") is deliberately
-      covered instead by saga-orchestrator's existing
+- [x] **Test:** the E2E suite covers happy path + all three compensation paths
+      and runs in CI. `e2e` module (two compose scenarios) green live
+      (2026-09-10): `HappyPathAndInventoryCompensationE2ETest` (happy path +
+      insufficient-stock compensation) and `PaymentDeclineCompensationE2ETest`
+      (payment-decline compensation), 3/3 tests, `BUILD SUCCESS`. The third
+      compensation path ("payment succeeds, then an operator aborts") remains
+      deliberately covered instead by saga-orchestrator's existing
       `SagaCompensationIntegrationTest` — see CONTEXT.md's Key Decisions Log
       for why re-proving it over a live compose network path would make the
-      suite flaky by construction.
-- [ ] **The Definition-of-Done line "full happy-path order flow works end to
-      end" is now true**, minus the dashboard. **Blocked** on the same live
-      `e2e`/`docker compose` issue — not a code defect; every test that does
-      not require a live multi-container Docker Compose run is green.
+      suite flaky by construction. CI wiring (`build.yml`'s `e2e` job) still
+      to be confirmed green on an actual push.
+- [x] **The Definition-of-Done line "full happy-path order flow works end to
+      end" is now true**, minus the dashboard. Verified twice live this
+      session: once via the `e2e` module's Testcontainers-driven suite, and
+      once via a manually placed order against `docker compose up`, reaching
+      `CONFIRMED` with a real shipment and notification.
 
 ---
 

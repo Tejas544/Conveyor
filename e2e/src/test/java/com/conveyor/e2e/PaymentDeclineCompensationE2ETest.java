@@ -27,8 +27,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 class PaymentDeclineCompensationE2ETest {
 
-  private static final String INVENTORY_DB_URL =
-      "jdbc:postgresql://localhost:5432/inventory_service";
   private static final String INVENTORY_DB_USER = "inventory_service";
   private static final String INVENTORY_DB_PASSWORD = "inventory_service_local_dev_only";
 
@@ -38,6 +36,7 @@ class PaymentDeclineCompensationE2ETest {
           .withLocalCompose(true)
           .withBuild(true)
           .withEnv("CONVEYOR_PAYMENT_GATEWAY_DECLINE_RATE", "1")
+          .withExposedService("postgres", 5432, Wait.forListeningPort())
           .withExposedService(
               "order-service",
               8081,
@@ -67,7 +66,7 @@ class PaymentDeclineCompensationE2ETest {
   @Test
   void everyChargeDeclinesReleasesInventoryAndCancelsTheOrder() throws Exception {
     String sku = "SKU-E2E-DECLINE-" + UUID.randomUUID().toString().substring(0, 8);
-    InventorySeed.seedStock(INVENTORY_DB_URL, INVENTORY_DB_USER, INVENTORY_DB_PASSWORD, sku, 10);
+    InventorySeed.seedStock(dbUrl(), INVENTORY_DB_USER, INVENTORY_DB_PASSWORD, sku, 10);
 
     Map<String, Object> request =
         Map.of(
@@ -102,6 +101,16 @@ class PaymentDeclineCompensationE2ETest {
     // re-deriving an invariant those suites already establish.
     JsonResponse payment = RestClient.get(paymentUrl("/api/v1/payments/" + orderId));
     assertThat(payment.status()).isEqualTo(404);
+  }
+
+  // See HappyPathAndInventoryCompensationE2ETest#dbUrl() for why this goes through
+  // Testcontainers' dynamically-assigned mapped port rather than the host's fixed 5432.
+  private String dbUrl() {
+    return "jdbc:postgresql://"
+        + STACK.getServiceHost("postgres", 5432)
+        + ":"
+        + STACK.getServicePort("postgres", 5432)
+        + "/inventory_service";
   }
 
   private String orderUrl(String path) {

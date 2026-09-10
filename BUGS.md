@@ -20,6 +20,38 @@ Format for each entry:
 
 ---
 
+## [BUG-0014] `e2e` module's direct-JDBC seeding hardcoded `localhost:5432`, which silently connects to whichever Postgres wins that host port — not necessarily this stack's container
+- **Date:** 2026-09-10
+- **Phase:** Phase 7 — Dispatch/Notification Service and full-pipeline E2E
+- **Severity:** High (both E2E test classes failed outright; not a defect in the services themselves)
+- **Symptom:** with Docker healthy and `C:` holding plenty of free space (after the human moved
+  Docker Desktop's data root to `D:`), `mvn -f e2e/pom.xml verify -DskipE2E=false` got past image
+  builds and both compose stacks came up healthy, but every test failed inside its first statement —
+  `InventorySeed.seedStock(...)` — with `PSQL FATAL: password authentication failed for user
+  "inventory_service"`, using exactly the username/password `docker-compose.yml`/`.env` actually
+  configure.
+- **Root cause:** this machine has **two native Windows PostgreSQL services installed and running**
+  (`postgresql-x64-17` and `postgresql-x64-18`), permanently bound to `0.0.0.0:5432` — confirmed via
+  `Get-NetTCPConnection -LocalPort 5432` (owning PID resolved to a standalone `postgres.exe`, not a
+  Docker-related process) and `Get-Service`. Both E2E test classes hardcoded
+  `jdbc:postgresql://localhost:5432/inventory_service` — assuming `docker-compose.yml`'s fixed
+  `"5432:5432"` port publish would be the only thing listening there — rather than going through
+  Testcontainers' own dynamically-assigned mapped port the way every other exposed service in the
+  same test classes already does (`STACK.getServiceHost(...)`/`getServicePort(...)` for
+  order/inventory/payment/saga/dispatch). Ordinary `docker compose up` from this repo was never
+  affected because service-to-service traffic uses Docker's internal network hostname (`postgres`),
+  never `localhost:5432` — this was latent and unnoticed until the E2E module's direct-from-host JDBC
+  connection first exercised the host port.
+- **Fix:** both `HappyPathAndInventoryCompensationE2ETest` and `PaymentDeclineCompensationE2ETest` now
+  add `.withExposedService("postgres", 5432, Wait.forListeningPort())` to their `ComposeContainer` and
+  build the JDBC URL from `STACK.getServiceHost("postgres", 5432)`/`getServicePort(...)` at call time
+  (a new `dbUrl()` method, mirroring the existing `orderUrl()`/`paymentUrl()`/`dispatchUrl()` pattern)
+  instead of a hardcoded constant — sidesteps host port 5432 contention entirely, regardless of what
+  else is listening there. Re-run live: all 3 E2E tests green (`BUILD SUCCESS`).
+- **Status:** Fixed.
+
+---
+
 ## [BUG-0013] Adding the `e2e` module to the root reactor broke every Dockerfile's `mvnw -pl <service> -am` build
 - **Date:** 2026-09-10
 - **Phase:** Phase 7 — Dispatch/Notification Service and full-pipeline E2E
