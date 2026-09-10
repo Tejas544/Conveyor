@@ -5,7 +5,10 @@ distributed transactions over Kafka, polyglot persistence (PostgreSQL +
 MongoDB), and a live ops dashboard — the service-layer counterpart to
 [Anvil](../Anvil)'s storage-engine-level 2PC.
 
-> **Status: Phase 3 (Order Service) complete, Phase 4 (Inventory Service) next.**
+> **Status: Phases 3–5 (Order, Inventory, Payment services) code-complete;
+> live verification (`./mvnw verify`, `docker compose up`) pending — Docker
+> Desktop is unresponsive on the dev machine (BUGS.md BUG-0008). Phase 6
+> (Saga Orchestrator) is next once that clears.**
 > This README is a stub; it grows into the full project overview (architecture
 > diagram, results, "what each part demonstrates") in Phase 16. See
 > [`CONTEXT.md`](CONTEXT.md) for exactly where things stand right now.
@@ -86,14 +89,38 @@ container.
 
 ## Where things stand
 
-Only **order-service** has real business logic implemented (Phase 3): the
-order aggregate and its guarded state machine, `POST/GET /orders`, the
-transactional outbox + polling publisher (`conveyor-common`, reused by every
-service from Phase 4 on), and a consumer that will project saga replies onto
-order status once Phase 6 (saga-orchestrator) exists — a no-op today by
-design. The other four services have their data layer (Phase 2: migrations,
-JPA entities, Mongo validators) but no REST APIs or Kafka consumers/producers
-yet; those land in Phases 4–7.
+Three of five services have real business logic implemented:
+
+- **order-service** (Phase 3): the order aggregate and its guarded state
+  machine, `POST/GET /orders`, the transactional outbox + polling publisher
+  (`conveyor-common`, reused unchanged by every later service), and a
+  consumer that will project saga replies onto order status once Phase 6
+  (saga-orchestrator) exists — a no-op today by design.
+- **inventory-service** (Phase 4): `ReserveInventory`/`ReleaseInventory`
+  Kafka consumers with all-or-nothing multi-SKU reservation via a guarded
+  conditional `UPDATE` (ADR-9 — oversell is structurally impossible, not just
+  detected), `GET /inventory`, `GET /inventory/{sku}`, `POST
+  /inventory/{sku}/adjust` (`ADMIN`-only), `GET /inventory/{sku}/reservations`,
+  `GET /catalog/{sku}`, `GET /catalog?q=`.
+- **payment-service** (Phase 5): `ChargePayment`/`RefundPayment` consumers
+  against a deterministic-under-seed mock gateway, idempotent charge/refund
+  (no double charge, ever, even under concurrent redelivery), `GET
+  /payments/{orderId}`, and a `chaos`-profile-only `POST /test/failure-mode`
+  for forcing declines/timeouts/gateway errors.
+- **conveyor-common** also gained a shared JWT resource server (ADR-5) in
+  Phase 4 — every service can now use `@PreAuthorize("hasRole('ADMIN')")`.
+  Token *issuance* (`POST /auth/login`) isn't built yet; see `CONTEXT.md`'s
+  Key Decisions Log.
+
+**Not yet verified live this session** — Docker Desktop's daemon is
+unresponsive (BUGS.md BUG-0008), so none of Phases 3–5's Testcontainers-backed
+tests or `docker compose up` have run since Inventory/Payment were written.
+`./mvnw compile`/`test-compile` and Spotless/Checkstyle are green, which
+doesn't need Docker.
+
+**saga-orchestrator** and **dispatch-service** still have only their data
+layer (Phase 2: migrations, JPA entities, Mongo validators where applicable) —
+no REST APIs or Kafka consumers/producers yet; those land in Phases 6–7.
 
 ## Building and testing
 

@@ -20,6 +20,35 @@ Format for each entry:
 
 ---
 
+## [BUG-0008] Docker Desktop daemon unresponsive — blocks Phase 4/5 live Testcontainers and compose verification
+- **Date:** 2026-09-10
+- **Phase:** Phase 4 — Inventory Service, Phase 5 — Payment Service
+- **Severity:** High (blocks `./mvnw verify`'s Testcontainers-backed integration tests and `docker
+  compose up`; not a defect in Conveyor itself)
+- **Symptom:** `docker ps`, `docker info`, and `docker images` all hang indefinitely (verified with
+  explicit 15–45s timeouts, repeated three times over the course of this session) with no output and
+  no error — the CLI never gets a response from the daemon. `C:` free space recovered to ~5.7 GB from
+  BUG-0007's 17 MB (unrelated fix, presumably by the human), ruling out disk pressure as this
+  session's cause.
+- **Root cause:** not yet diagnosed — consistent with BUG-0002's prior Docker Desktop/WSL2 backend
+  instability on this machine (a different symptom: that one failed disk provisioning outright with a
+  clear log line; this one hangs silently with no daemon response at all), but not confirmed to be the
+  same underlying defect.
+- **Fix:** none applied. Per CLAUDE.md's guidance on the human's own system state, restarting Docker
+  Desktop (or, if that doesn't recover it, the `wsl --unregister docker-desktop[-data]` step BUG-0002
+  used) is left for the human rather than attempted unilaterally here.
+- **Impact on Phases 4/5:** both phases are code-complete — `./mvnw compile`, `test-compile`,
+  `spotless:apply`/`check`, and `checkstyle:check` all pass clean across the full reactor (none of
+  which need Docker) — but every Testcontainers-backed integration test written for either phase
+  (concurrency, idempotency, contract, and the ADMIN-auth tests) is **unverified this session**, as is
+  `docker compose up` with the new services' images. Per CLAUDE.md §2.5 ("no fake done"), neither
+  phase is being marked complete in `CONTEXT.md` until this is confirmed running.
+- **Status:** Open — blocked on the human restarting Docker Desktop (or repeating BUG-0002's WSL2
+  reset if a restart alone doesn't recover it). Unblocks when: `docker ps` responds, then re-run
+  `./mvnw verify` for the full reactor and `docker compose up -d --build` for the live health check.
+
+---
+
 ## [BUG-0007] Host C: drive full — `docker compose up --build` fails, blocking Phase 3's live health check
 - **Date:** 2026-09-10
 - **Phase:** Phase 3 — Order Service: REST, aggregate, outbox

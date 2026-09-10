@@ -5,8 +5,9 @@ state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 3 — Order Service: REST, aggregate, outbox · Code complete, tests
-green; blocked on one live exit criterion — see Blockers**
+**Phase 5 — Payment Service · Code complete, compiles clean, Spotless/
+Checkstyle clean; all tests written but unverified live — see Blockers**
+(Phase 4 — Inventory Service is in the identical state, one phase behind.)
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -53,49 +54,98 @@ green; blocked on one live exit criterion — see Blockers**
   had its Postgres connections refused; fixed via `reuseForks=false`).
 
 ## In Progress
-- Phase 3 implementation is **written and fully green under `./mvnw verify`**:
-  order aggregate with a guarded state machine (`Order.transitionTo`,
-  `OrderStateMachineTest` — every legal pair succeeds, every illegal pair
-  rejected); `POST/GET /orders`, `GET /orders/{id}`, `GET /orders/summary`
-  (RFC 9457 errors, OpenAPI via springdoc); the transactional outbox
-  poller (`com.conveyor.common.outbox.OutboxPoller`) — generic plain-JDBC
-  `SELECT … FOR UPDATE SKIP LOCKED`, reusable by every later service unchanged;
-  `Idempotency-Key` support (202 on create, 200 with the original body on
-  replay); `SagaEventProjectionListener` projecting saga replies onto
-  `orders.status`, inbox-deduplicated — a verified no-op today since nothing
-  publishes those events until Phase 6, exercised in tests by hand-publishing
-  a fake reply; `order-placed.schema.json` + a `SchemaValidator` helper in
-  `conveyor-contracts` for the contract test (ADR-6).
-- **Verified:** full reactor `./mvnw verify` green — all 7 modules, including
-  the outbox-crash-safety test (order committed with the poller disabled,
-  simulating "process killed before the poller ever ran"; triggering the
-  poller afterward publishes the event exactly once), the `OrderPlaced`
-  contract test against its JSON Schema, and the idempotency-key test.
-- **Not yet verified this session:** `docker compose up` → all 5 services
-  healthy with the new order-service code (Phase 3's last exit criterion) —
-  blocked, see Blockers.
+- **Phase 3 (Order Service)** is unchanged from before this session: written,
+  `./mvnw verify` was green in an earlier session (Testcontainers-backed;
+  outbox-crash-safety, the `OrderPlaced` contract test, and the
+  idempotency-key test all passed), but `docker compose up` → all 5 services
+  healthy (its last exit criterion) is still unverified — see Blockers.
+- **Phase 4 (Inventory Service) — code complete this session.**
+  `ReserveInventory`/`ReleaseInventory` consumers (`InventoryCommandListener`
+  → `InventoryReservationService`), inbox-deduplicated; all-or-nothing
+  multi-SKU reservation via ADR-9's guarded conditional `UPDATE` per SKU, with
+  a partial success explicitly undone (compensating `UPDATE`s) rather than
+  relying on transaction rollback, since the failure outcome still has to
+  commit alongside the inbox/outbox rows; redelivery of an already-processed
+  command replays the reply from the order's current reservations rather than
+  redoing the write, which is what makes "delivered 3×" produce 3 *identical*
+  replies rather than being silently swallowed after the first; `GET
+  /inventory`, `GET /inventory/{sku}`, `POST /inventory/{sku}/adjust`
+  (`ADMIN`-gated, audited to `stock_adjustments`), `GET
+  /inventory/{sku}/reservations`, `GET /catalog/{sku}`, `GET /catalog?q=`.
+  `conveyor_inbox_duplicates_total{consumer="inventory-service"}` wired.
+  `inventory.after-reserve-before-publish` chaos point wired (ARCHITECTURE.md
+  §14), reusing `ChaosGate` from Phase 3 unchanged. Tests written for every
+  PLAN.md exit criterion: the 50-thread/20-repetition concurrency test, the
+  3×-redelivery idempotency test, reserve→release exact restore (plus a
+  double-release no-op-safety test), the multi-SKU partial-shortfall test, the
+  unknown-reservation no-op test, and a real-Kafka contract test validating
+  all three reply events (`InventoryReserved`/`InventoryReservationFailed`/
+  `InventoryReleased`) against their published JSON Schemas.
+- **Phase 5 (Payment Service) — code complete this session.** `ChargePayment`/
+  `RefundPayment` consumers (`PaymentCommandListener` →
+  `PaymentChargeService`), idempotency keyed on the command's own
+  `idempotencyKey` field (not the envelope `eventId`) against
+  `payment_attempts.idempotency_key`'s unique constraint; a concurrent
+  redelivery race on that constraint is deliberately allowed to surface as a
+  `DataIntegrityViolationException`, caught by the listener and retried
+  exactly once — provably sufficient, since once any transaction commits a
+  key's attempt row, every other caller's retry takes the read-only "existing
+  attempt" branch and can never conflict again (see that class's Javadoc).
+  `MockPaymentGateway`: deterministic under an injected seed (one
+  `Random.nextDouble()` per `charge()` call, `resetSeed()` for tests), base
+  failure rates default to zero so ordinary tests aren't fighting a randomly
+  failing gateway, `armFailureMode()` is the mechanism behind `POST
+  /test/failure-mode` (`chaos` profile only — see `ChaosProfileStartupGuard`
+  below). `GET /payments/{orderId}`. `payment.before-commit` and
+  `payment.after-commit-before-publish` chaos points wired per ARCHITECTURE.md
+  §14's table. Tests written for every PLAN.md exit criterion: the
+  5-concurrent-charge no-double-charge test, refund idempotency plus the
+  refund-of-a-nonexistent-payment loud-failure test, all three failure modes'
+  reason/retryable pairing, gateway-determinism (same seed → same outcome-type
+  sequence, plain unit test), the chaos+prod startup-guard refusal (isolated
+  unit test against `ChaosProfileStartupGuard`, not a full context boot), and
+  a real-Kafka contract test for all three reply events.
+- **New in conveyor-common this session (ADR-5): a shared JWT resource-server.**
+  `SecurityAutoConfiguration` registers a `JwtDecoder` (RS256, public key from
+  `JwtSecurityProperties`) and `@EnableMethodSecurity`, with the HTTP filter
+  chain itself left `permitAll()` — the actual gate is `@PreAuthorize` on the
+  one endpoint that needs it so far (inventory's `/adjust`). `ProblemDetailAdvice`
+  gained an `AccessDeniedException` → 403 mapping (a `@PreAuthorize` denial is
+  thrown inside Spring MVC's own dispatch, so without this it fell through to
+  the generic 500 handler). `TestJwtSupport` (conveyor-common's test-jar)
+  mints tokens signed with the matching demo private key for any service's
+  tests. Full reasoning in this file's Key Decisions Log below.
+- **Not yet verified this session, for any of the above:** `./mvnw verify`
+  (every Testcontainers-backed integration test across all 3 phases) and
+  `docker compose up` — blocked, see Blockers. What *is* verified: `./mvnw
+  compile` and `test-compile` are green for the full reactor, and
+  `spotless:apply`/`checkstyle:check` are clean — none of which touch Docker.
 
 ## Blockers
-- **Host `C:` drive is full** (BUGS.md BUG-0007): 17 MB free out of 226 GB,
-  unrelated to this project (Docker Desktop's own WSL2 disk is only 24 GB).
-  `docker compose up -d --build` fails with "no space left on device" on the
-  order-service image build. Not something to hunt through and free
-  unilaterally on the human's system drive — left for the human to resolve.
-  **Unblocks when:** the human frees space on `C:` (or repoints Docker
-  Desktop's data root); then re-run `docker compose up -d --build` and
-  confirm all 5 health endpoints return `UP` to close out Phase 3.
+- **Docker Desktop's daemon is unresponsive** (BUGS.md BUG-0008): `docker ps`
+  / `docker info` hang indefinitely with no response, confirmed three times
+  with explicit timeouts over this session. `C:` free space recovered to
+  ~5.7 GB (BUG-0007's 17 MB low-water mark is resolved, presumably by the
+  human, separately from this issue). Not something to restart/reset
+  unilaterally — Docker Desktop restarts and especially the WSL2-unregister
+  step BUG-0002 used are left for the human, per `CLAUDE.md`'s guidance on
+  risky actions affecting the whole machine, not just this repo.
+  **Unblocks when:** the human restarts Docker Desktop (or repeats BUG-0002's
+  WSL2 reset if a plain restart doesn't recover it); then re-run `./mvnw
+  verify` for the full reactor (this alone covers Phases 4 and 5's entire test
+  suites, never run live yet) and `docker compose up -d --build` to close out
+  Phase 3's, 4's, and 5's remaining live-verification exit criteria together.
 
 ## Next Steps
-1. Once `C:` has space: `docker compose up -d --build`, confirm all 5
-   services healthy, smoke-test `POST /api/v1/orders` end to end per the
-   README quickstart.
-2. Mark Phase 3 complete in this file once that's done.
-3. Begin Phase 4 — Inventory Service (`PLAN.md`): `ReserveInventory`/
-   `ReleaseInventory` consumers with inbox dedup, the guarded conditional
-   `UPDATE` reservation (ADR-9, schema already in place from Phase 2), and
-   the concurrency test (50 threads, one winner) that's this phase's
-   headline exit criterion. Independent of Phase 5 (Payment) — either could
-   go next.
+1. Once Docker responds again: `./mvnw verify` for the full reactor first
+   (fast signal, no compose needed) — this is where Phase 4 and 5's test
+   suites get their first live run.
+2. `docker compose up -d --build`, confirm all 5 services healthy (closes
+   Phase 3's last exit criterion too), smoke-test `POST /api/v1/orders`
+   through to `GET /api/v1/inventory` per the README quickstart.
+3. Mark Phases 3, 4, and 5 complete in this file once both are green.
+4. Begin Phase 6 — Saga Orchestrator (`PLAN.md`) — the centrepiece phase,
+   depends on Phases 3–5 all being done.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -104,12 +154,63 @@ green; blocked on one live exit criterion — see Blockers**
 - Maven is **not** installed globally → the project uses the **Maven
   Wrapper** (`mvnw`/`mvnw.cmd`), committed to the repo, so no local Maven
   install is required by anyone building this.
-- Docker 28.3 + Compose v2.38 confirmed working.
+- Docker 28.3 + Compose v2.38 confirmed working as of Phase 2; unresponsive as
+  of this session (BUG-0008) — status, not a version change.
 
 ## Key Decisions Log
 
 Full reasoning for each is in `ARCHITECTURE.md` §3.
 
+- **Phase 4 — a shared JWT resource-server (ADR-5) was built now, in
+  conveyor-common, but token *issuance* (`POST /auth/login`, a JWKS endpoint)
+  was not.** PLAN.md's Phase 4 exit criteria require `POST
+  /inventory/{sku}/adjust` to "require `ADMIN`" — the first point in the plan
+  ADR-5's auth model is actually load-bearing — but PLAN.md never assigns
+  building the *issuer* to a specific phase (it surfaces implicitly at Phase 8,
+  when the dashboard needs a real login screen). Building the full issuer now
+  would be scope well beyond what Phase 4 asks for. Resolution: build the
+  verification side for real (RS256 `JwtDecoder`, roles-claim → `ROLE_*`
+  authorities, `@PreAuthorize` method security) against a committed demo/dev
+  keypair (a public key is not a secret; the private key never appears in
+  application code), and defer issuance. Until Phase 8, the only source of a
+  valid token is `TestJwtSupport` (conveyor-common's test-jar) — real, but
+  test-only. `CONVEYOR_SECURITY_JWT_PUBLIC_KEY_PEM` overrides the default per
+  `.env.example` and ARCHITECTURE.md §12's "mounted Secret" posture.
+- **Phase 4 — HTTP-level access stays `permitAll()` everywhere except the one
+  endpoint PLAN.md actually names.** ADR-5 says "authenticated: everything
+  else," which would mean retrofitting auth onto order-service's Phase-3
+  endpoints too — out of scope for a phase about inventory, and not something
+  to do silently to already-shipped code. Role-gating rolls out endpoint by
+  endpoint as each phase's plan calls for it; this is a sequencing decision,
+  not a contradiction of ADR-5.
+- **Phase 4 — inventory's "identical replies" idempotency test uses `hasSize(1)`
+  on the set of reservationId lists across 3 replies, not exact envelope
+  equality.** Each redelivery gets a fresh `eventId`/outbox row (by design —
+  the outbox is append-only), so "identical" means identical *content*
+  (`reservationIds`), which is what actually matters to a consumer.
+- **Phase 5 — payment idempotency is keyed on the command payload's own
+  `idempotencyKey` field, not the envelope's `eventId`.** ARCHITECTURE.md
+  §5.4 already specifies `payment_attempts.idempotency_key` as
+  `sagaId:CHARGE_PAYMENT` — a value the *caller* constructs, not something
+  payment-service derives. This also means a concurrent-redelivery race is
+  caught as a `payment_attempts` unique-constraint violation rather than an
+  inbox violation; `PaymentCommandListener` retries exactly once on that
+  specific exception, which is provably sufficient (see that class's Javadoc)
+  — not a general retry-until-it-works loop.
+- **Phase 5 — the mock gateway's "configurable latency distribution"
+  (ARCHITECTURE.md §3.3) was not implemented.** No PLAN.md Phase 5 exit
+  criterion tests latency, and simulated sleeps would only slow the test
+  suite for no assertion gained. `MockPaymentGateway` implements the parts
+  that are tested — deterministic-under-seed outcomes, the three failure
+  modes, `armFailureMode` — and the gap is recorded here rather than silently
+  dropped. Worth revisiting if Phase 12's load test ever wants a non-zero
+  gateway latency to make its bottleneck analysis more realistic.
+- **Phase 4/5 — both phases are code-complete but their Testcontainers-backed
+  test suites have never been run live this session** (BUG-0008: Docker
+  Desktop's daemon is unresponsive). `./mvnw compile`/`test-compile` and
+  Spotless/Checkstyle are all green — everything that doesn't need Docker.
+  Per `CLAUDE.md` §2.5, neither phase is marked complete above until `./mvnw
+  verify` actually runs and passes.
 - **Phase 3 — `POST /orders` requires `unitPrice` per item and a top-level
   `currency`**, though ARCHITECTURE.md §10.1's example request omits both.
   order-service has no synchronous call to Inventory Service's catalog to
