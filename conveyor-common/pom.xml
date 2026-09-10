@@ -70,6 +70,27 @@
       <artifactId>conveyor-contracts</artifactId>
     </dependency>
     <dependency>
+      <!-- ARCHITECTURE.md §11 metrics: /actuator/prometheus, versioned by the Spring Boot BOM. -->
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+    <dependency>
+      <!-- Phase 9 tracing: Micrometer Tracing's OTel bridge, chosen over an OpenTelemetry Java
+           agent so trace propagation is testable in-process (an in-memory SpanExporter swapped in
+           under test) rather than only observable via a live collector — see CONTEXT.md's Key
+           Decisions Log. Spring Boot auto-configures MDC traceId/spanId insertion once this is on
+           the classpath, which is what LogstashEncoder's full-MDC dump then picks up for free. -->
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-tracing-bridge-otel</artifactId>
+    </dependency>
+    <dependency>
+      <!-- OTLP/HTTP span exporter; auto-configured by Spring Boot Actuator whenever this and the
+           bridge above are present, sending to management.otlp.tracing.endpoint (Tempo, in the
+           docker-compose observability profile). -->
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+    </dependency>
+    <dependency>
       <!-- JSON structured logging (ARCHITECTURE.md §11) via a shared
            logback-spring.xml (below), so no service configures this by hand. -->
       <groupId>net.logstash.logback</groupId>

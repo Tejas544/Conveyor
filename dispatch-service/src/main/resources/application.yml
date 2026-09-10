@@ -25,6 +25,14 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    listener:
+      observation-enabled: true
+    template:
+      # See conveyor-common's TraceparentSupport + ADR-7: the outbox is the sole publish
+      # path, and it needs to send the *stored* traceparent header (captured at write time,
+      # same transaction as the business write), not have Spring Kafka overwrite it with a
+      # brand-new rootless trace at async send time (no live span exists in the poller thread).
+      observation-enabled: false
 
 server:
   port: ${SERVER_PORT:8085}
@@ -33,7 +41,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
   endpoint:
     health:
       probes:
@@ -43,6 +51,18 @@ management:
           include: readinessState,db
         liveness:
           include: livenessState
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        "[http.server.requests]": true
+  tracing:
+    sampling:
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0}
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
 
 springdoc:
   api-docs:

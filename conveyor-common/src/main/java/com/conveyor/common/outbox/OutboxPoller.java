@@ -38,6 +38,10 @@ public class OutboxPoller {
   private static final String MARK_PUBLISHED_SQL =
       "UPDATE outbox SET published_at = :publishedAt, attempts = attempts + 1 WHERE id = :id";
 
+  private static final String OLDEST_UNPUBLISHED_LAG_SQL =
+      "SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_at))), 0) "
+          + "FROM outbox WHERE published_at IS NULL";
+
   private final NamedParameterJdbcTemplate jdbcTemplate;
   private final KafkaTemplate<String, String> kafkaTemplate;
   private final ObjectMapper objectMapper;
@@ -105,6 +109,18 @@ public class OutboxPoller {
     } catch (Exception e) {
       log.warn("Malformed outbox headers JSON, publishing without headers: {}", headersJson, e);
     }
+  }
+
+  /**
+   * ARCHITECTURE.md §11's {@code conveyor_outbox_lag_seconds} gauge: the age of the oldest
+   * unpublished row, evaluated live on every Prometheus scrape rather than cached, so it reflects
+   * the publish path's actual current health.
+   */
+  public double oldestUnpublishedLagSeconds() {
+    Double lag =
+        jdbcTemplate.queryForObject(
+            OLDEST_UNPUBLISHED_LAG_SQL, new MapSqlParameterSource(), Double.class);
+    return lag == null ? 0d : lag;
   }
 
   private void markPublished(UUID id) {

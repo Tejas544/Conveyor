@@ -2,6 +2,7 @@ package com.conveyor.order.service;
 
 import com.conveyor.common.envelope.ConveyorEnvelope;
 import com.conveyor.common.kafka.KafkaTopics;
+import com.conveyor.common.tracing.TraceparentSupport;
 import com.conveyor.contracts.events.OrderItemPayload;
 import com.conveyor.contracts.events.OrderPlacedPayload;
 import com.conveyor.contracts.events.ShippingAddressPayload;
@@ -21,6 +22,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -36,18 +39,22 @@ import org.springframework.transaction.annotation.Transactional;
 public class OrderService {
 
   private static final String PRODUCER = "order-service";
+  private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
   private final OrderRepository orderRepository;
   private final OutboxRecordRepository outboxRecordRepository;
   private final ObjectMapper objectMapper;
+  private final TraceparentSupport traceparentSupport;
 
   public OrderService(
       OrderRepository orderRepository,
       OutboxRecordRepository outboxRecordRepository,
-      ObjectMapper objectMapper) {
+      ObjectMapper objectMapper,
+      TraceparentSupport traceparentSupport) {
     this.orderRepository = orderRepository;
     this.outboxRecordRepository = outboxRecordRepository;
     this.objectMapper = objectMapper;
+    this.traceparentSupport = traceparentSupport;
   }
 
   /**
@@ -93,6 +100,7 @@ public class OrderService {
 
     outboxRecordRepository.save(buildOrderPlacedOutboxRecord(order, request));
 
+    log.info("Order {} placed for customer {}", order.getId(), order.getCustomerId());
     return new OrderCreationResult(order, true);
   }
 
@@ -150,13 +158,18 @@ public class OrderService {
     Map<String, Object> envelopeMap = objectMapper.convertValue(envelope, Map.class);
 
     Map<String, Object> headers =
-        Map.of(
-            "event-type",
-            OrderPlacedPayload.EVENT_TYPE,
-            "schema-version",
-            String.valueOf(OrderPlacedPayload.SCHEMA_VERSION),
-            "content-type",
-            "application/json");
+        new LinkedHashMap<>(
+            Map.of(
+                "event-type",
+                OrderPlacedPayload.EVENT_TYPE,
+                "schema-version",
+                String.valueOf(OrderPlacedPayload.SCHEMA_VERSION),
+                "content-type",
+                "application/json"));
+    String traceparent = traceparentSupport.currentTraceparent();
+    if (traceparent != null) {
+      headers.put("traceparent", traceparent);
+    }
 
     return new OutboxRecord(
         UUID.randomUUID(),

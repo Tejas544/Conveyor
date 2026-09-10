@@ -3,6 +3,7 @@ package com.conveyor.payment.service;
 import com.conveyor.common.chaos.ChaosGate;
 import com.conveyor.common.envelope.ConveyorEnvelope;
 import com.conveyor.common.kafka.KafkaTopics;
+import com.conveyor.common.tracing.TraceparentSupport;
 import com.conveyor.contracts.events.PaymentChargedPayload;
 import com.conveyor.contracts.events.PaymentFailedPayload;
 import com.conveyor.contracts.events.PaymentRefundedPayload;
@@ -23,9 +24,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,6 +49,7 @@ public class PaymentChargeService {
   static final String CONSUMER_NAME = "payment-service";
   private static final String PRODUCER = "payment-service";
   private static final String CHAOS_POINT_BEFORE_COMMIT = "payment.before-commit";
+  private static final Logger log = LoggerFactory.getLogger(PaymentChargeService.class);
 
   private final PaymentRepository paymentRepository;
   private final PaymentAttemptRepository paymentAttemptRepository;
@@ -53,6 +58,7 @@ public class PaymentChargeService {
   private final MockPaymentGateway gateway;
   private final ChaosGate chaosGate;
   private final ObjectMapper objectMapper;
+  private final TraceparentSupport traceparentSupport;
   private final Counter inboxDuplicatesCounter;
 
   public PaymentChargeService(
@@ -63,6 +69,7 @@ public class PaymentChargeService {
       MockPaymentGateway gateway,
       ChaosGate chaosGate,
       ObjectMapper objectMapper,
+      TraceparentSupport traceparentSupport,
       MeterRegistry meterRegistry) {
     this.paymentRepository = paymentRepository;
     this.paymentAttemptRepository = paymentAttemptRepository;
@@ -71,6 +78,7 @@ public class PaymentChargeService {
     this.gateway = gateway;
     this.chaosGate = chaosGate;
     this.objectMapper = objectMapper;
+    this.traceparentSupport = traceparentSupport;
     this.inboxDuplicatesCounter =
         Counter.builder("conveyor_inbox_duplicates_total")
             .tag("consumer", CONSUMER_NAME)
@@ -103,6 +111,7 @@ public class PaymentChargeService {
       inboxRecordRepository.save(new InboxRecord(inboxId));
     }
     outboxRecordRepository.save(reply);
+    log.info("{} for order {}", reply.getEventType(), orderId);
   }
 
   private OutboxRecord attemptCharge(
@@ -264,13 +273,18 @@ public class PaymentChargeService {
     Map<String, Object> envelopeMap = objectMapper.convertValue(envelope, Map.class);
 
     Map<String, Object> headers =
-        Map.of(
-            "event-type",
-            eventType,
-            "schema-version",
-            String.valueOf(schemaVersion),
-            "content-type",
-            "application/json");
+        new LinkedHashMap<>(
+            Map.of(
+                "event-type",
+                eventType,
+                "schema-version",
+                String.valueOf(schemaVersion),
+                "content-type",
+                "application/json"));
+    String traceparent = traceparentSupport.currentTraceparent();
+    if (traceparent != null) {
+      headers.put("traceparent", traceparent);
+    }
 
     return new OutboxRecord(
         UUID.randomUUID(),

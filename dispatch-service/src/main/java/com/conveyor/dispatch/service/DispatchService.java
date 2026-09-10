@@ -2,6 +2,7 @@ package com.conveyor.dispatch.service;
 
 import com.conveyor.common.envelope.ConveyorEnvelope;
 import com.conveyor.common.kafka.KafkaTopics;
+import com.conveyor.common.tracing.TraceparentSupport;
 import com.conveyor.contracts.events.ShipmentCreatedPayload;
 import com.conveyor.dispatch.domain.Shipment;
 import com.conveyor.dispatch.notification.NotificationDocument;
@@ -16,8 +17,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,6 +42,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class DispatchService {
 
   static final String CONSUMER_NAME = "dispatch-service";
+  private static final Logger log = LoggerFactory.getLogger(DispatchService.class);
   private static final String PRODUCER = "dispatch-service";
   private static final String CARRIER = "STANDARD";
   private static final String NOTIFICATION_CHANNEL = "EMAIL";
@@ -49,6 +54,7 @@ public class DispatchService {
   private final InboxRecordRepository inboxRecordRepository;
   private final OutboxRecordRepository outboxRecordRepository;
   private final ObjectMapper objectMapper;
+  private final TraceparentSupport traceparentSupport;
   private final Counter inboxDuplicatesCounter;
 
   public DispatchService(
@@ -57,12 +63,14 @@ public class DispatchService {
       InboxRecordRepository inboxRecordRepository,
       OutboxRecordRepository outboxRecordRepository,
       ObjectMapper objectMapper,
+      TraceparentSupport traceparentSupport,
       MeterRegistry meterRegistry) {
     this.shipmentRepository = shipmentRepository;
     this.notificationRepository = notificationRepository;
     this.inboxRecordRepository = inboxRecordRepository;
     this.outboxRecordRepository = outboxRecordRepository;
     this.objectMapper = objectMapper;
+    this.traceparentSupport = traceparentSupport;
     this.inboxDuplicatesCounter =
         Counter.builder("conveyor_inbox_duplicates_total")
             .tag("consumer", CONSUMER_NAME)
@@ -87,6 +95,7 @@ public class DispatchService {
     shipmentRepository.save(shipment);
     outboxRecordRepository.save(buildShipmentCreatedReply(orderId, sagaId, eventId, shipment));
     inboxRecordRepository.save(new InboxRecord(inboxId));
+    log.info("Shipment {} created for order {}", shipment.getTrackingNumber(), orderId);
   }
 
   /**
@@ -137,13 +146,18 @@ public class DispatchService {
     Map<String, Object> envelopeMap = objectMapper.convertValue(envelope, Map.class);
 
     Map<String, Object> headers =
-        Map.of(
-            "event-type",
-            ShipmentCreatedPayload.EVENT_TYPE,
-            "schema-version",
-            String.valueOf(ShipmentCreatedPayload.SCHEMA_VERSION),
-            "content-type",
-            "application/json");
+        new LinkedHashMap<>(
+            Map.of(
+                "event-type",
+                ShipmentCreatedPayload.EVENT_TYPE,
+                "schema-version",
+                String.valueOf(ShipmentCreatedPayload.SCHEMA_VERSION),
+                "content-type",
+                "application/json"));
+    String traceparent = traceparentSupport.currentTraceparent();
+    if (traceparent != null) {
+      headers.put("traceparent", traceparent);
+    }
 
     return new OutboxRecord(
         UUID.randomUUID(),

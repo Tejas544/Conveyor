@@ -33,12 +33,24 @@ public class SagaMetrics {
         "conveyor_saga_active",
         sagaInstanceRepository,
         repo -> NON_TERMINAL.stream().mapToLong(state -> repo.findByState(state).size()).sum());
+    // Not in ARCHITECTURE.md §11's original table, added here to back the "NEEDS_INTERVENTION >
+    // 0" alert rule PLAN.md's Phase 9 deliverable list names, and to give INV-SAGA-04
+    // (count(NEEDS_INTERVENTION) == 0) a live signal ahead of Phase 10's own DB-level check.
+    registry.gauge(
+        "conveyor_saga_needs_intervention",
+        sagaInstanceRepository,
+        repo -> repo.findByState(SagaState.NEEDS_INTERVENTION).size());
   }
 
   public void recordStepDuration(String step, String direction, Instant startedAt) {
+    // publishPercentileHistogram(): a plain Timer only exposes _count/_sum/_max to Prometheus —
+    // histogram_quantile() (the Pipeline Latency and Saga Health dashboards, ARCHITECTURE.md §11's
+    // own p50/p95/p99 requirement) needs the _bucket series this opts into. Found live in Phase 9
+    // ("Grafana dashboards populate against a local load run" — they didn't, for these two).
     Timer.builder("conveyor_saga_step_duration_seconds")
         .tag("step", step)
         .tag("direction", direction)
+        .publishPercentileHistogram()
         .register(registry)
         .record(Duration.between(startedAt, Instant.now()));
   }
@@ -50,6 +62,7 @@ public class SagaMetrics {
         .increment();
     Timer.builder("conveyor_saga_duration_seconds")
         .tag("outcome", outcome)
+        .publishPercentileHistogram()
         .register(registry)
         .record(Duration.between(createdAt, Instant.now()));
   }

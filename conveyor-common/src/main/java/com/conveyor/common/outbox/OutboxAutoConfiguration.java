@@ -1,6 +1,7 @@
 package com.conveyor.common.outbox;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import javax.sql.DataSource;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -28,7 +29,11 @@ public class OutboxAutoConfiguration {
       NamedParameterJdbcTemplate jdbcTemplate,
       KafkaTemplate<String, String> kafkaTemplate,
       ObjectMapper objectMapper,
-      OutboxPollerProperties properties) {
-    return new OutboxPoller(jdbcTemplate, kafkaTemplate, objectMapper, properties);
+      OutboxPollerProperties properties,
+      MeterRegistry meterRegistry) {
+    OutboxPoller poller = new OutboxPoller(jdbcTemplate, kafkaTemplate, objectMapper, properties);
+    meterRegistry.gauge(
+        "conveyor_outbox_lag_seconds", poller, OutboxPoller::oldestUnpublishedLagSeconds);
+    return poller;
   }
 }

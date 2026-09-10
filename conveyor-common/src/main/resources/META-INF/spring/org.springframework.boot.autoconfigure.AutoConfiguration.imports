@@ -4,3 +4,4 @@ com.conveyor.common.jackson.HibernateJsonFormatMapperAutoConfiguration
 com.conveyor.common.kafka.KafkaMdcAutoConfiguration
 com.conveyor.common.outbox.OutboxAutoConfiguration
 com.conveyor.common.security.SecurityAutoConfiguration
+com.conveyor.common.tracing.TracingAutoConfiguration

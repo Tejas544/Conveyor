@@ -2,6 +2,7 @@ package com.conveyor.saga.service;
 
 import com.conveyor.common.envelope.ConveyorEnvelope;
 import com.conveyor.common.kafka.KafkaTopics;
+import com.conveyor.common.tracing.TraceparentSupport;
 import com.conveyor.contracts.events.ChargePaymentPayload;
 import com.conveyor.contracts.events.InventoryItemPayload;
 import com.conveyor.contracts.events.OrderCancelledPayload;
@@ -30,6 +31,7 @@ import com.conveyor.saga.repository.SagaStepRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -77,6 +79,7 @@ public class SagaOrchestrationService {
   private final ObjectMapper objectMapper;
   private final SagaProperties properties;
   private final SagaMetrics metrics;
+  private final TraceparentSupport traceparentSupport;
 
   public SagaOrchestrationService(
       SagaInstanceRepository sagaInstanceRepository,
@@ -85,7 +88,8 @@ public class SagaOrchestrationService {
       OutboxRecordRepository outboxRecordRepository,
       ObjectMapper objectMapper,
       SagaProperties properties,
-      SagaMetrics metrics) {
+      SagaMetrics metrics,
+      TraceparentSupport traceparentSupport) {
     this.sagaInstanceRepository = sagaInstanceRepository;
     this.sagaStepRepository = sagaStepRepository;
     this.inboxRecordRepository = inboxRecordRepository;
@@ -93,6 +97,7 @@ public class SagaOrchestrationService {
     this.objectMapper = objectMapper;
     this.properties = properties;
     this.metrics = metrics;
+    this.traceparentSupport = traceparentSupport;
   }
 
   // ---------------------------------------------------------------- OrderPlaced
@@ -335,6 +340,7 @@ public class SagaOrchestrationService {
             sagaId,
             null));
     metrics.recordSagaTerminal("COMPLETED", saga.getCreatedAt());
+    log.info("Saga {} completed, order {} confirmed", sagaId, saga.getOrderId());
   }
 
   @Transactional
@@ -767,13 +773,18 @@ public class SagaOrchestrationService {
     Map<String, Object> envelopeMap = objectMapper.convertValue(envelope, Map.class);
 
     Map<String, Object> headers =
-        Map.of(
-            "event-type",
-            eventType,
-            "schema-version",
-            String.valueOf(schemaVersion),
-            "content-type",
-            "application/json");
+        new LinkedHashMap<>(
+            Map.of(
+                "event-type",
+                eventType,
+                "schema-version",
+                String.valueOf(schemaVersion),
+                "content-type",
+                "application/json"));
+    String traceparent = traceparentSupport.currentTraceparent();
+    if (traceparent != null) {
+      headers.put("traceparent", traceparent);
+    }
 
     return new OutboxRecord(
         UUID.randomUUID(),
