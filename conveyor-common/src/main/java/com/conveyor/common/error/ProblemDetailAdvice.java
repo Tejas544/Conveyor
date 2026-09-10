@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
@@ -21,6 +22,20 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 public class ProblemDetailAdvice extends ResponseEntityExceptionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(ProblemDetailAdvice.class);
+
+  /**
+   * ADR-5: a {@code @PreAuthorize} denial is thrown by the method-security AOP interceptor
+   * <em>inside</em> {@code DispatcherServlet.doDispatch}, so Spring MVC's own exception-handler
+   * chain (this class) sees it before it would ever reach Spring Security's filter-level entry
+   * point — without this handler it falls through to {@link #handleUnexpected} as a bare 500.
+   */
+  @ExceptionHandler(AccessDeniedException.class)
+  public ProblemDetail handleAccessDenied(AccessDeniedException ex) {
+    ProblemDetail problem =
+        ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, "Access is denied.");
+    addTraceId(problem);
+    return problem;
+  }
 
   @ExceptionHandler(Exception.class)
   public ProblemDetail handleUnexpected(Exception ex) {

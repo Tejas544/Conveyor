@@ -2,3 +2,4 @@ com.conveyor.common.chaos.ChaosAutoConfiguration
 com.conveyor.common.error.ErrorHandlingAutoConfiguration
 com.conveyor.common.kafka.KafkaMdcAutoConfiguration
 com.conveyor.common.outbox.OutboxAutoConfiguration
+com.conveyor.common.security.SecurityAutoConfiguration

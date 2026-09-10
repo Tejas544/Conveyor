@@ -46,6 +46,17 @@
       <artifactId>spring-kafka</artifactId>
     </dependency>
     <dependency>
+      <!-- ADR-5: every service is a Spring Security resource server validating the same RS256
+           token. Compile-scope so it lands on every service's classpath transitively, exactly
+           like the outbox poller above — one auto-configuration instead of five copies. -->
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+    </dependency>
+    <dependency>
       <groupId>com.conveyor</groupId>
       <artifactId>conveyor-contracts</artifactId>
     </dependency>
