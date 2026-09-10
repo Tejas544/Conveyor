@@ -5,20 +5,35 @@ state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 7 — Dispatch/Notification Service and full-pipeline E2E · Code
-complete, `./mvnw verify` and the new `e2e` module are both unverified this
-session — Docker Desktop was unresponsive from the start (BUGS.md BUG-0008,
-fifth-plus occurrence).** `dispatch-service` now has a real
-`OrderConfirmedListener` → `DispatchService` consuming the saga's pivot event,
-publishing `ShipmentCreated`, and a Kafka retry-then-DLQ error handler; a new
-top-level `e2e` Maven module drives the whole stack over its public REST API
-only. Every exit criterion has a test written against it (see Key Decisions
-Log for what each test proves and the one deliberate scope decision on the
-third compensation path) — none of it has been *run* this session, so none of
-it is being marked complete per CLAUDE.md §2.5. Phase 6 (Saga Orchestrator)
-remains exactly where the last session left it: code complete,
-`./mvnw verify` green from that session, its own live-compose exit criterion
-still open on the same Docker issue.
+**Phase 7 — Dispatch/Notification Service and full-pipeline E2E · `./mvnw
+verify` green (135/135, full 8-module reactor) — blocked only on the `e2e`
+module's own live `docker compose` run.** `dispatch-service` now has a real
+`OrderConfirmedListener` → `DispatchService` consuming the saga's pivot event
+(inbox-guarded `shipments` row in Postgres; an idempotent-by-construction
+Mongo upsert for the notification log — see Key Decisions Log for why two
+different idempotency mechanisms), publishing `ShipmentCreated` via the
+outbox, and a Kafka retry-then-DLQ error handler scoped to this service alone.
+`GET /shipments/{orderId}`, `GET /notifications?orderId=`. **4/4 new
+dispatch-service test classes green**, including the retry-and-DLQ test (a
+poison message is retried per its `FixedBackOff`, republished to
+`conveyor.order.events.v1.dlq`, `conveyor_dlq_messages_total` increments, and
+the next order on the same partition is unaffected) — independently
+reconfirming this session, not trusted from compilation alone.
+
+A new `e2e` module (Testcontainers' Docker Compose, driving only the public
+REST API) covers the happy path plus two of the three required compensation
+paths for real, over two live compose stacks; a third stack scenario is
+deliberately not attempted (see Key Decisions Log). One real bug was found and
+fixed building it: adding `e2e` to the root reactor broke every service's
+Dockerfile build (BUGS.md BUG-0013). After that fix, the module's own live run
+got correctly past dependency resolution into the actual image builds before
+failing with what first looked like Docker Desktop/WSL2 disk corruption —
+`df -h` immediately after showed the actual cause: **the host `C:` drive is
+full again (226 GB / 226 GB used, 0 bytes free — BUG-0007 recurring)**, not
+new corruption. Not fixable from here; needs the human to free space on `C:`
+or move Docker Desktop's data root to `D:` (160 GB free). Phase 6 (Saga
+Orchestrator) remains exactly where the last session left it: code complete,
+its own live-compose exit criterion still open on the same disk-space issue.
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -152,38 +167,41 @@ still open on the same Docker issue.
   criterion remains unverified — see Blockers.
 
 ## In Progress
-- **Nothing mid-flight.** Phase 7's code and tests are written; the only
-  remaining action is running them — `./mvnw verify` (full reactor) and
-  `mvn -pl e2e verify -DskipE2E=false` — which needs a responsive Docker
-  daemon this session never got.
+- **Nothing mid-flight.** `./mvnw verify` is green (135/135, full reactor),
+  independently reconfirmed live this session. The only remaining action for
+  Phase 7 is the `e2e` module's own live run, blocked on host disk space (see
+  Blockers) rather than anything left to build or fix in the code.
 
 ## Blockers
-- **Docker Desktop was unresponsive for this entire session** (BUGS.md
-  BUG-0008, now updated for a fifth-plus occurrence) — `docker version`/
-  `docker ps` both hung past a 15s timeout every time they were checked, with
-  no recovery observed. This blocks two independent things: Phase 6's
-  already-open live-compose smoke test (unchanged from last session), and
-  Phase 7's entire test suite, since dispatch-service's new tests are
-  Testcontainers-backed (need the daemon for Postgres/Redpanda/Mongo) and the
-  new `e2e` module needs `docker compose build` for all five images. Not
-  something to restart/reset unilaterally per `CLAUDE.md`'s guidance on
-  host-wide risky actions.
-  **Unblocks when:** the human gets Docker Desktop responding again. Then, in
-  order: (1) `./mvnw verify` for the full 8-module reactor — this alone closes
-  Phase 7's unit/integration-level exit criteria; (2)
-  `mvn -pl e2e verify -DskipE2E=false` — closes Phase 7's full-pipeline exit
-  criterion; (3) revisit Phase 6's still-open live `docker compose` smoke
-  test if not already covered by (2)'s stack coming up healthy.
+- **The host `C:` drive is completely full (226 GB / 226 GB used, 0 bytes
+  free) — BUG-0007 recurring**, discovered this session via `df -h` right
+  after the `e2e` module's live run failed with what initially looked like
+  fresh Docker Desktop/WSL2 disk corruption (`input/output error` writing
+  containerd's own metadata database). The full disk is almost certainly the
+  actual cause of that symptom, not new corruption — see BUGS.md BUG-0007 and
+  BUG-0008's latest updates for the full reasoning. This blocks only the
+  `e2e` module's live multi-container run and Phase 6's still-open live
+  `docker compose` smoke test; `./mvnw verify` itself (Testcontainers-only,
+  much smaller footprint) ran clean at 135/135 earlier in this same session.
+  Not something to hunt through and free up unilaterally on a system drive
+  outside this repo (`CLAUDE.md`'s guidance on host-wide risky actions) —
+  this project's own Docker footprint (images/volumes) is nowhere near large
+  enough to explain 226 GB.
+  **Unblocks when:** the human frees space on `C:`, or points Docker
+  Desktop's data root at `D:` (160 GB free). Then:
+  `mvn -f e2e/pom.xml verify -DskipE2E=false` closes Phase 7's full-pipeline
+  exit criterion, and re-running `docker compose up -d --build` closes
+  Phase 6's still-open one too.
 
 ## Next Steps
-1. Once Docker responds: run `./mvnw verify` (full reactor, all 8 modules)
-   and confirm dispatch-service's four new test classes are green alongside
-   everything already passing.
-2. Run `mvn -pl e2e verify -DskipE2E=false` and confirm both E2E test classes
-   (happy path + insufficient-stock compensation on one compose stack,
-   payment-decline compensation on a second) pass against the real containers.
-3. Only then: check off Phase 7's exit criteria in `PLAN.md`, mark it complete
-   in this file, and move to Phase 8 (Live ops dashboard).
+1. Once `C:` has room: run `mvn -f e2e/pom.xml verify -DskipE2E=false` and
+   confirm both E2E test classes (happy path + insufficient-stock compensation
+   on one compose stack, payment-decline compensation on a second) pass
+   against the real containers.
+2. Only then: check off Phase 7's remaining exit criteria in `PLAN.md`, mark
+   it complete in this file, and move to Phase 8 (Live ops dashboard).
+3. Separately, revisit Phase 6's still-open live `docker compose` smoke test
+   — likely satisfied for free once (1) brings the same stack up healthy.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -446,7 +464,11 @@ Full reasoning for each is in `ARCHITECTURE.md` §3.
   `kafka-compat` job split applies: it needs `docker compose build` for all
   five images plus real wall-clock time no other module's Testcontainers suite
   needs, so it would slow down every ordinary `verify` run for a check CI can
-  run in parallel instead.
+  run in parallel instead. **It also isn't a root-reactor module at all**
+  (BUGS.md BUG-0013): declaring it in the root pom's `<modules>` broke every
+  service's own Dockerfile build, since Maven resolves the full module list
+  before `-pl` filtering and none of the Dockerfiles `COPY` `e2e/pom.xml`.
+  Run standalone via `mvn -f e2e/pom.xml verify -DskipE2E=false` instead.
 
 ## Discrepancies against `PROJECT_BRIEF.md`
 Per `CLAUDE.md` §0, logged rather than silently edited into the brief.

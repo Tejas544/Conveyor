@@ -321,15 +321,37 @@ automated suite that will be the regression net for everything after.
 
 **Exit criteria.**
 - [ ] **Test:** full E2E — REST call → shipment row → notification document →
-      `ShipmentCreated` on the topic.
-- [ ] **Test:** dispatch is idempotent — redelivered `OrderConfirmed` → one
-      shipment, one notification.
-- [ ] **Test:** dispatch failing repeatedly does **not** cancel the order (the
+      `ShipmentCreated` on the topic. `DispatchHappyPathIntegrationTest` +
+      `DispatchReplyContractTest` prove dispatch-service's own half of this
+      (driven directly, per PLAN.md's "exercised by driving it directly"
+      convention) and are green. The literal REST-call-in variant is the
+      `e2e` module's `HappyPathAndInventoryCompensationE2ETest`, written and
+      compiling but **not yet run successfully** — see CONTEXT.md/BUGS.md
+      (Docker Desktop/WSL2 disk I/O corruption hit mid-build this session,
+      after dependency resolution succeeded; not a code defect).
+- [x] **Test:** dispatch is idempotent — redelivered `OrderConfirmed` → one
+      shipment, one notification. (`DispatchIdempotencyIntegrationTest`,
+      green.)
+- [x] **Test:** dispatch failing repeatedly does **not** cancel the order (the
       pivot rule holds); it retries and DLQs, and the order stays `CONFIRMED`.
+      (`DispatchRetryAndDlqIntegrationTest`, green — a poison message is
+      retried per the `FixedBackOff`, republished to
+      `conveyor.order.events.v1.dlq`, `conveyor_dlq_messages_total` increments,
+      and the very next order on the same partition is unaffected.)
 - [ ] **Test:** the E2E suite covers happy path + all three compensation paths
-      and runs in CI.
+      and runs in CI. Code-complete (`e2e` module, two compose scenarios,
+      dedicated `build.yml` job) — **blocked on the same live-run issue as
+      above**, not written. Two of the three compensation paths (insufficient
+      stock; payment decline) are organic REST-only scenarios in this module;
+      the third ("payment succeeds, then an operator aborts") is deliberately
+      covered instead by saga-orchestrator's existing
+      `SagaCompensationIntegrationTest` — see CONTEXT.md's Key Decisions Log
+      for why re-proving it over a live compose network path would make the
+      suite flaky by construction.
 - [ ] **The Definition-of-Done line "full happy-path order flow works end to
-      end" is now true**, minus the dashboard.
+      end" is now true**, minus the dashboard. **Blocked** on the same live
+      `e2e`/`docker compose` issue — not a code defect; every test that does
+      not require a live multi-container Docker Compose run is green.
 
 ---
 

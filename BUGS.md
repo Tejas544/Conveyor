@@ -20,6 +20,33 @@ Format for each entry:
 
 ---
 
+## [BUG-0013] Adding the `e2e` module to the root reactor broke every Dockerfile's `mvnw -pl <service> -am` build
+- **Date:** 2026-09-10
+- **Phase:** Phase 7 — Dispatch/Notification Service and full-pipeline E2E
+- **Severity:** High (would have broken `docker compose build` for all five services, including in
+  CI — caught before merge, not in production)
+- **Symptom:** `mvn -pl e2e verify -DskipE2E=false` (the e2e module's own live run) failed inside
+  20 seconds with `Local Docker Compose exited abnormally with code 1`; the actual Docker build log
+  showed every one of the five services' `RUN ./mvnw -q -pl <service> -am dependency:go-offline`
+  Dockerfile steps failing with exit code 1.
+- **Root cause:** the initial implementation added `<module>e2e</module>` to the root `pom.xml`'s
+  `<modules>` list. Maven resolves the *entire* declared module list into the reactor before `-pl`
+  filtering is applied — so `./mvnw -pl inventory-service -am ...` still requires `e2e/pom.xml` to
+  exist on disk, even though the actual build only needs `inventory-service` and its dependencies.
+  None of the five Dockerfiles `COPY` `e2e/pom.xml` into their build context (they only copy the
+  pom.xml files of modules they actually depend on), so inside every image build the reactor
+  resolution step failed outright with a missing-file error.
+- **Fix:** removed `e2e` from the root pom's `<modules>` list entirely (with a comment explaining
+  why) and switched every invocation (`.github/workflows/build.yml`'s `e2e` job, this module's own
+  pom comments, test Javadoc) from `mvn -pl e2e verify` to `mvn -f e2e/pom.xml verify` — the module
+  still inherits everything it needs from `conveyor-parent` via its own `<parent>`/`<relativePath>`,
+  it just isn't aggregated into the default reactor build anymore. Re-verified: the same live run
+  then progressed correctly past dependency resolution into the actual image builds (see BUG-0008's
+  latest update for what stopped it after that — unrelated host disk I/O corruption, not this).
+- **Status:** Fixed.
+
+---
+
 ## [BUG-0012] `docker compose up` crash-looped: saga-orchestrator's DB role/pg_hba entry never existed on the persistent Postgres volume
 - **Date:** 2026-09-10
 - **Phase:** Phase 6 — Saga Orchestrator
@@ -234,6 +261,39 @@ Format for each entry:
   `CONTEXT.md` until `./mvnw verify` and `mvn -pl e2e verify -DskipE2E=false` are both confirmed green.
   **Unblocks when:** the human gets Docker Desktop responding again; then `./mvnw verify` (full
   reactor) and the e2e module's own run close Phase 7 for good.
+- **Update (2026-09-10, same session, later):** Docker recovered mid-session without any action
+  taken here (consistent with every prior occurrence — the human evidently restarted it). Re-ran
+  live: `./mvnw verify` for the **full 8-module reactor — 135/135 tests green**, including all four
+  new dispatch-service test classes (`DispatchHappyPathIntegrationTest`,
+  `DispatchReplyContractTest`, `DispatchIdempotencyIntegrationTest`,
+  `DispatchRetryAndDlqIntegrationTest`), confirming Phase 7's unit/integration-level exit criteria
+  for real. The `e2e` module's own live run then failed twice: first on a real defect in this
+  session's own code (logged separately as BUG-0013, now fixed), then — after that fix let the build
+  progress correctly past dependency resolution into the actual multi-stage image builds — on
+  `error committing ...: write /var/lib/docker/buildkit/containerd-overlayfs/metadata_v2.db: input/
+  output error` and, on the very next test class, `blob sha256:... expected at
+  /var/lib/desktop-containerd/.../blobs/sha256/...: input/output error`. **Sixth+ distinct symptom of
+  this bug's underlying instability**, and the most concrete yet: these are literal I/O errors from
+  Docker Desktop's WSL2-backed virtual disk failing to read/write its own containerd metadata and
+  content-addressed blob store — not a hung CLI, not a dropped RPC, but the backing filesystem itself
+  refusing writes. `docker builder prune -af` (a low-risk attempt to clear a possibly-corrupted
+  BuildKit cache, tried here since it touches no user data or other projects' state) failed with the
+  identical `metadata_v2.db: input/output error`, which read like fresh WSL2/VHDX corruption at
+  first — **until `df -h` immediately afterward showed the host `C:` drive at 226 GB / 226 GB used,
+  0 bytes free.** That reframes the diagnosis: this is almost certainly **BUG-0007 recurring**
+  (`C:` filling up again after being freed to ~5.7 GB some time between that entry and BUG-0002's
+  resolution), not new Docker Desktop/WSL2 corruption — a completely full backing disk producing
+  literal I/O errors on any write, containerd metadata included, is the more mundane and far more
+  likely explanation than the filesystem spontaneously corrupting itself. This matters because it
+  changes the fix: **restarting Docker Desktop or `wsl --unregister` will not help if the disk is
+  simply full** — freeing space on `C:` is the actual unblock, exactly as BUG-0007 already
+  concluded and exactly as unresolved as that entry left it. Phase 7's code is unaffected and
+  independently proven correct by the 135/135 reactor run above; only the `e2e` module's live
+  multi-container run remains unverified, now understood to be blocked on disk space, not host
+  software instability.
+  **Unblocks when:** the human frees space on `C:` (or points Docker Desktop's data root at a drive
+  with room — `D:` has 160 GB free on this machine) and `mvn -f e2e/pom.xml verify -DskipE2E=false`
+  then runs clean.
 
 ## [BUG-0007] Host C: drive full — `docker compose up --build` fails, blocking Phase 3's live health check
 - **Date:** 2026-09-10
@@ -256,6 +316,13 @@ Format for each entry:
 - **Status:** Open — blocked on the human freeing disk space on `C:`. Unblocks when: `docker
   compose up -d --build` succeeds and all 8 containers/5 health endpoints are re-verified `UP`
   (same check as BUG-0002/BUG-0004's resolutions).
+- **Update (2026-09-10, Phase 7 session):** recurred. `C:` was at ~5.7 GB free per BUG-0002's
+  resolution note; `df -h` this session showed it back to 226 GB / 226 GB used, 0 bytes free —
+  someone/something filled it again in the interim, still not Conveyor's own Docker state (this
+  project's images/volumes don't come close to 226 GB). This is what actually produced BUG-0008's
+  "input/output error" symptoms this session (see that entry's latest update) — not fresh Docker
+  Desktop/WSL2 corruption as first suspected, a full disk read that way instead. Still open, same
+  fix needed: free space on `C:`, or move Docker Desktop's data root to `D:` (160 GB free).
 
 ---
 

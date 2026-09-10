@@ -71,7 +71,7 @@ jobs:
       # `docker compose build` of all five images plus real wall-clock time no other module's
       # suite needs) and only runs here, explicitly, against the real compose stack.
       - name: mvn verify (e2e module only)
-        run: ./mvnw -B -pl e2e verify -DskipE2E=false
+        run: ./mvnw -B -f e2e/pom.xml verify -DskipE2E=false
 
       - name: Dump container logs on failure
         if: failure()

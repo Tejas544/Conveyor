@@ -31,7 +31,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * rather than over the added latency and jitter of a live compose network path.
  *
  * <p>Requires a Docker daemon capable of {@code docker compose build} for all five services; {@code
- * mvn -pl e2e verify -DskipE2E=false} is the only way to run this module (see its pom).
+ * mvn -f e2e/pom.xml verify -DskipE2E=false} is the only way to run this module (see its pom).
  */
 @Testcontainers
 class HappyPathAndInventoryCompensationE2ETest {
