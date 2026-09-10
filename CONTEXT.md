@@ -5,9 +5,11 @@ state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 5 — Payment Service · Code complete, compiles clean, Spotless/
-Checkstyle clean; all tests written but unverified live — see Blockers**
-(Phase 4 — Inventory Service is in the identical state, one phase behind.)
+**Phase 6 — Saga Orchestrator · Not started.** Phases 4 (Inventory) and 5
+(Payment) are complete — `./mvnw verify` is green across the full 7-module
+reactor, every exit criterion's test passing live. Phase 3 (Order Service)
+has one item left open: `docker compose up` → all 5 services healthy — see
+Blockers.
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -52,100 +54,96 @@ Checkstyle clean; all tests written but unverified live — see Blockers**
   significant one, BUG-0004 (a Testcontainers/Docker Desktop environment
   defect where every test class after the first in a shared Surefire fork
   had its Postgres connections refused; fixed via `reuseForks=false`).
-
-## In Progress
-- **Phase 3 (Order Service)** is unchanged from before this session: written,
-  `./mvnw verify` was green in an earlier session (Testcontainers-backed;
-  outbox-crash-safety, the `OrderPlaced` contract test, and the
-  idempotency-key test all passed), but `docker compose up` → all 5 services
-  healthy (its last exit criterion) is still unverified — see Blockers.
-- **Phase 4 (Inventory Service) — code complete this session.**
-  `ReserveInventory`/`ReleaseInventory` consumers (`InventoryCommandListener`
-  → `InventoryReservationService`), inbox-deduplicated; all-or-nothing
-  multi-SKU reservation via ADR-9's guarded conditional `UPDATE` per SKU, with
-  a partial success explicitly undone (compensating `UPDATE`s) rather than
-  relying on transaction rollback, since the failure outcome still has to
-  commit alongside the inbox/outbox rows; redelivery of an already-processed
-  command replays the reply from the order's current reservations rather than
-  redoing the write, which is what makes "delivered 3×" produce 3 *identical*
-  replies rather than being silently swallowed after the first; `GET
-  /inventory`, `GET /inventory/{sku}`, `POST /inventory/{sku}/adjust`
-  (`ADMIN`-gated, audited to `stock_adjustments`), `GET
-  /inventory/{sku}/reservations`, `GET /catalog/{sku}`, `GET /catalog?q=`.
-  `conveyor_inbox_duplicates_total{consumer="inventory-service"}` wired.
+- Phase 4 — Inventory Service ✅ (2026-09-10). `ReserveInventory`/
+  `ReleaseInventory` consumers (`InventoryCommandListener` →
+  `InventoryReservationService`), inbox-deduplicated; all-or-nothing multi-SKU
+  reservation via ADR-9's guarded conditional `UPDATE` per SKU, with a partial
+  success explicitly undone (compensating `UPDATE`s) rather than relying on
+  transaction rollback, since the failure outcome still has to commit
+  alongside the inbox/outbox rows; redelivery of an already-processed command
+  replays the reply from the order's current reservations rather than redoing
+  the write, which is what makes "delivered 3×" produce 3 *identical* replies
+  rather than being silently swallowed after the first; `GET /inventory`,
+  `GET /inventory/{sku}`, `POST /inventory/{sku}/adjust` (`ADMIN`-gated,
+  audited to `stock_adjustments`), `GET /inventory/{sku}/reservations`,
+  `GET /catalog/{sku}`, `GET /catalog?q=`.
+  `conveyor_inbox_duplicates_total{consumer="inventory-service"}` wired;
   `inventory.after-reserve-before-publish` chaos point wired (ARCHITECTURE.md
-  §14), reusing `ChaosGate` from Phase 3 unchanged. Tests written for every
-  PLAN.md exit criterion: the 50-thread/20-repetition concurrency test, the
-  3×-redelivery idempotency test, reserve→release exact restore (plus a
-  double-release no-op-safety test), the multi-SKU partial-shortfall test, the
-  unknown-reservation no-op test, and a real-Kafka contract test validating
-  all three reply events (`InventoryReserved`/`InventoryReservationFailed`/
-  `InventoryReleased`) against their published JSON Schemas.
-- **Phase 5 (Payment Service) — code complete this session.** `ChargePayment`/
-  `RefundPayment` consumers (`PaymentCommandListener` →
-  `PaymentChargeService`), idempotency keyed on the command's own
-  `idempotencyKey` field (not the envelope `eventId`) against
-  `payment_attempts.idempotency_key`'s unique constraint; a concurrent
-  redelivery race on that constraint is deliberately allowed to surface as a
-  `DataIntegrityViolationException`, caught by the listener and retried
-  exactly once — provably sufficient, since once any transaction commits a
-  key's attempt row, every other caller's retry takes the read-only "existing
-  attempt" branch and can never conflict again (see that class's Javadoc).
-  `MockPaymentGateway`: deterministic under an injected seed (one
+  §14), reusing `ChaosGate` from Phase 3 unchanged. All exit criteria met and
+  verified: `./mvnw verify` green — 44/44 tests, including the 50-thread ×
+  20-repetition concurrency test (exactly 1 winner every time), the
+  3×-redelivery idempotency test, reserve→release exact restore, the
+  multi-SKU partial-shortfall test, the unknown-reservation no-op test, and a
+  real-Kafka contract test validating all three reply events against their
+  published JSON Schemas.
+- Phase 5 — Payment Service ✅ (2026-09-10). `ChargePayment`/`RefundPayment`
+  consumers (`PaymentCommandListener` → `PaymentChargeService`), idempotency
+  keyed on the command's own `idempotencyKey` field (not the envelope
+  `eventId`) against `payment_attempts.idempotency_key`'s unique constraint; a
+  concurrent redelivery race on that constraint is deliberately allowed to
+  surface as a `DataIntegrityViolationException`, caught by the listener and
+  retried exactly once — provably sufficient, since once any transaction
+  commits a key's attempt row, every other caller's retry takes the read-only
+  "existing attempt" branch and can never conflict again (see that class's
+  Javadoc). `MockPaymentGateway`: deterministic under an injected seed (one
   `Random.nextDouble()` per `charge()` call, `resetSeed()` for tests), base
   failure rates default to zero so ordinary tests aren't fighting a randomly
   failing gateway, `armFailureMode()` is the mechanism behind `POST
-  /test/failure-mode` (`chaos` profile only — see `ChaosProfileStartupGuard`
-  below). `GET /payments/{orderId}`. `payment.before-commit` and
-  `payment.after-commit-before-publish` chaos points wired per ARCHITECTURE.md
-  §14's table. Tests written for every PLAN.md exit criterion: the
-  5-concurrent-charge no-double-charge test, refund idempotency plus the
+  /test/failure-mode` (`chaos` profile only, guarded by
+  `ChaosProfileStartupGuard` against `chaos`+`prod`). `GET /payments/{orderId}`.
+  `payment.before-commit` and `payment.after-commit-before-publish` chaos
+  points wired per ARCHITECTURE.md §14's table. All exit criteria met and
+  verified: `./mvnw verify` green — 23/23 tests, including the 5-concurrent-
+  charge no-double-charge test, refund idempotency plus the
   refund-of-a-nonexistent-payment loud-failure test, all three failure modes'
-  reason/retryable pairing, gateway-determinism (same seed → same outcome-type
-  sequence, plain unit test), the chaos+prod startup-guard refusal (isolated
-  unit test against `ChaosProfileStartupGuard`, not a full context boot), and
-  a real-Kafka contract test for all three reply events.
-- **New in conveyor-common this session (ADR-5): a shared JWT resource-server.**
-  `SecurityAutoConfiguration` registers a `JwtDecoder` (RS256, public key from
-  `JwtSecurityProperties`) and `@EnableMethodSecurity`, with the HTTP filter
-  chain itself left `permitAll()` — the actual gate is `@PreAuthorize` on the
-  one endpoint that needs it so far (inventory's `/adjust`). `ProblemDetailAdvice`
-  gained an `AccessDeniedException` → 403 mapping (a `@PreAuthorize` denial is
-  thrown inside Spring MVC's own dispatch, so without this it fell through to
-  the generic 500 handler). `TestJwtSupport` (conveyor-common's test-jar)
-  mints tokens signed with the matching demo private key for any service's
-  tests. Full reasoning in this file's Key Decisions Log below.
-- **Not yet verified this session, for any of the above:** `./mvnw verify`
-  (every Testcontainers-backed integration test across all 3 phases) and
-  `docker compose up` — blocked, see Blockers. What *is* verified: `./mvnw
-  compile` and `test-compile` are green for the full reactor, and
-  `spotless:apply`/`checkstyle:check` are clean — none of which touch Docker.
+  reason/retryable pairing, gateway-determinism (same seed → same
+  outcome-type sequence), the chaos+prod startup-guard refusal, and a
+  real-Kafka contract test for all three reply events.
+- **conveyor-common also gained, alongside Phases 4/5:** a shared JWT
+  resource-server (ADR-5) — `SecurityAutoConfiguration` registers a
+  `JwtDecoder` (RS256) and `@EnableMethodSecurity`, HTTP filter chain left
+  `permitAll()`, the actual gate is `@PreAuthorize` on the endpoints that need
+  it (inventory's `/adjust` so far); `ProblemDetailAdvice` gained an
+  `AccessDeniedException` → 403 mapping; `TestJwtSupport` (test-jar) mints
+  tokens for any service's tests. Also
+  `HibernateJsonFormatMapperAutoConfiguration` — see BUGS.md BUG-0010's Key
+  Decisions entry below.
+
+## In Progress
+- **Phase 3 (Order Service)** has one item left: `docker compose up` → all 5
+  services healthy. `./mvnw verify` re-confirmed green this session
+  (Testcontainers-backed; outbox-crash-safety, the `OrderPlaced` contract
+  test, and the idempotency-key test all still pass). The live compose check
+  itself is blocked — see Blockers.
+- **Next: Phase 6 — Saga Orchestrator**, not started. Depends on Phases 3–5;
+  Phase 3's one open item doesn't block starting Phase 6's own implementation
+  work, only its own final sign-off.
 
 ## Blockers
-- **Docker Desktop's daemon is unresponsive** (BUGS.md BUG-0008): `docker ps`
-  / `docker info` hang indefinitely with no response, confirmed three times
-  with explicit timeouts over this session. `C:` free space recovered to
-  ~5.7 GB (BUG-0007's 17 MB low-water mark is resolved, presumably by the
-  human, separately from this issue). Not something to restart/reset
-  unilaterally — Docker Desktop restarts and especially the WSL2-unregister
-  step BUG-0002 used are left for the human, per `CLAUDE.md`'s guidance on
-  risky actions affecting the whole machine, not just this repo.
-  **Unblocks when:** the human restarts Docker Desktop (or repeats BUG-0002's
-  WSL2 reset if a plain restart doesn't recover it); then re-run `./mvnw
-  verify` for the full reactor (this alone covers Phases 4 and 5's entire test
-  suites, never run live yet) and `docker compose up -d --build` to close out
-  Phase 3's, 4's, and 5's remaining live-verification exit criteria together.
+- **`docker compose up` is blocked on Docker Desktop instability** (BUGS.md
+  BUG-0008, updated this session): the daemon recovered mid-session long
+  enough for `./mvnw verify` to run the full reactor clean (all 7 modules,
+  including every Phase 4/5 Testcontainers test), but a subsequent
+  `docker compose up -d --build` died partway through the image builds with a
+  BuildKit RPC error, and the daemon went back to refusing `docker ps`
+  immediately after. Not something to restart/reset unilaterally — Docker
+  Desktop restarts, and especially the WSL2-unregister step BUG-0002 used,
+  are left for the human, per `CLAUDE.md`'s guidance on risky actions
+  affecting the whole machine, not just this repo.
+  **Unblocks when:** the human gets Docker Desktop into a state that survives
+  a full multi-service build (this session's failure was a mid-build crash,
+  not just slowness, so a plain restart may not be enough); then re-run
+  `docker compose up -d --build` and confirm all 5 health endpoints return
+  `UP` to close out Phase 3.
 
 ## Next Steps
-1. Once Docker responds again: `./mvnw verify` for the full reactor first
-   (fast signal, no compose needed) — this is where Phase 4 and 5's test
-   suites get their first live run.
-2. `docker compose up -d --build`, confirm all 5 services healthy (closes
-   Phase 3's last exit criterion too), smoke-test `POST /api/v1/orders`
-   through to `GET /api/v1/inventory` per the README quickstart.
-3. Mark Phases 3, 4, and 5 complete in this file once both are green.
-4. Begin Phase 6 — Saga Orchestrator (`PLAN.md`) — the centrepiece phase,
-   depends on Phases 3–5 all being done.
+1. Once Docker survives a full build: `docker compose up -d --build`, confirm
+   all 5 services healthy, smoke-test `POST /api/v1/orders` through to
+   `GET /api/v1/inventory` per the README quickstart. This is the only thing
+   left to mark Phase 3 complete — Phases 4 and 5 are already done.
+2. Begin Phase 6 — Saga Orchestrator (`PLAN.md`) — the centrepiece phase.
+   Its own dependencies (Phases 3–5's code, not their live-compose checks)
+   are all satisfied, so this can start without waiting on item 1.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -205,12 +203,18 @@ Full reasoning for each is in `ARCHITECTURE.md` §3.
   modes, `armFailureMode` — and the gap is recorded here rather than silently
   dropped. Worth revisiting if Phase 12's load test ever wants a non-zero
   gateway latency to make its bottleneck analysis more realistic.
-- **Phase 4/5 — both phases are code-complete but their Testcontainers-backed
-  test suites have never been run live this session** (BUG-0008: Docker
-  Desktop's daemon is unresponsive). `./mvnw compile`/`test-compile` and
-  Spotless/Checkstyle are all green — everything that doesn't need Docker.
-  Per `CLAUDE.md` §2.5, neither phase is marked complete above until `./mvnw
-  verify` actually runs and passes.
+- **Phase 4/5 — `./mvnw verify` ran live and green for the full reactor this
+  session** once Docker recovered mid-session (BUG-0008), including the
+  50-thread/20-repetition inventory concurrency test and the 5-concurrent-
+  charge payment test. Two real bugs surfaced and were fixed along the way —
+  BUG-0009 (a corrupted, manually-re-flowed RSA test key) and BUG-0010 (a
+  test-scope-only `jackson-module-scala` leak from `spring-kafka-test`'s
+  embedded broker silently hijacking Hibernate's JSON-column deserialization,
+  fixed at the root via a new `HibernateJsonFormatMapperAutoConfiguration` in
+  conveyor-common that points Hibernate at the application's own
+  `ObjectMapper` bean instead of letting it build a private, differently-
+  configured one). `docker compose up` remains unverified — a separate,
+  Phase-3-only exit criterion (BUG-0008, updated).
 - **Phase 3 — `POST /orders` requires `unitPrice` per item and a top-level
   `currency`**, though ARCHITECTURE.md §10.1's example request omits both.
   order-service has no synchronous call to Inventory Service's catalog to

@@ -5,10 +5,10 @@ distributed transactions over Kafka, polyglot persistence (PostgreSQL +
 MongoDB), and a live ops dashboard — the service-layer counterpart to
 [Anvil](../Anvil)'s storage-engine-level 2PC.
 
-> **Status: Phases 3–5 (Order, Inventory, Payment services) code-complete;
-> live verification (`./mvnw verify`, `docker compose up`) pending — Docker
-> Desktop is unresponsive on the dev machine (BUGS.md BUG-0008). Phase 6
-> (Saga Orchestrator) is next once that clears.**
+> **Status: Phases 4 (Inventory) and 5 (Payment) complete — `./mvnw verify`
+> green across the full reactor. Phase 3 (Order) has one item left:
+> `docker compose up` health, blocked on Docker Desktop instability (BUGS.md
+> BUG-0008). Phase 6 (Saga Orchestrator) is next.**
 > This README is a stub; it grows into the full project overview (architecture
 > diagram, results, "what each part demonstrates") in Phase 16. See
 > [`CONTEXT.md`](CONTEXT.md) for exactly where things stand right now.
@@ -112,11 +112,11 @@ Three of five services have real business logic implemented:
   Token *issuance* (`POST /auth/login`) isn't built yet; see `CONTEXT.md`'s
   Key Decisions Log.
 
-**Not yet verified live this session** — Docker Desktop's daemon is
-unresponsive (BUGS.md BUG-0008), so none of Phases 3–5's Testcontainers-backed
-tests or `docker compose up` have run since Inventory/Payment were written.
-`./mvnw compile`/`test-compile` and Spotless/Checkstyle are green, which
-doesn't need Docker.
+**Verified:** `./mvnw verify` is green across the full 7-module reactor,
+including Inventory's 50-thread concurrency test and Payment's 5-concurrent-
+charge test. **Not yet verified:** `docker compose up` — Docker Desktop
+crashed mid-build partway through this session (BUGS.md BUG-0008), so the
+live health-endpoint check (Phase 3's one remaining item) is still pending.
 
 **saga-orchestrator** and **dispatch-service** still have only their data
 layer (Phase 2: migrations, JPA entities, Mongo validators where applicable) —
