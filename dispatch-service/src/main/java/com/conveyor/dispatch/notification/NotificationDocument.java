@@ -30,6 +30,24 @@ public class NotificationDocument {
       String renderedBody,
       String status,
       Instant sentAt) {
+    this(null, orderId, channel, template, recipient, renderedBody, status, sentAt);
+  }
+
+  /**
+   * {@code id} deterministic and caller-assigned (rather than Mongo-generated) is what makes {@link
+   * com.conveyor.dispatch.service.DispatchService#writeNotification} an idempotent upsert under
+   * redelivery — see that method's Javadoc.
+   */
+  public NotificationDocument(
+      String id,
+      String orderId,
+      String channel,
+      String template,
+      String recipient,
+      String renderedBody,
+      String status,
+      Instant sentAt) {
+    this.id = id;
     this.orderId = orderId;
     this.channel = channel;
     this.template = template;

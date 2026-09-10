@@ -128,6 +128,11 @@ services:
       DB_USERNAME: ${PAYMENT_DB_USER:-payment_service}
       DB_PASSWORD: ${PAYMENT_DB_PASSWORD:-payment_service_local_dev_only}
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      # Base gateway failure rates (ARCHITECTURE.md §3.3), 0 by default — unrelated to and not
+      # gated by the `chaos` profile's POST /test/failure-mode. Overridden by the e2e module's
+      # PaymentDeclineCompensationE2ETest to trigger the payment-declined compensation path for
+      # real, over the public REST API, without touching the chaos profile at all.
+      CONVEYOR_PAYMENT_GATEWAY_DECLINE_RATE: ${CONVEYOR_PAYMENT_GATEWAY_DECLINE_RATE:-0}
     ports:
       - "8083:8083"
     depends_on:

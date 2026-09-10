@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.conveyor</groupId>
+    <artifactId>conveyor-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>e2e</artifactId>
+  <packaging>jar</packaging>
+
+  <name>e2e</name>
+  <description>
+    PLAN.md Phase 7: whole stack via Testcontainers' Docker Compose module,
+    driving only the public REST API of the five live containers — no
+    internal Java types, no direct Kafka access, exactly what an external
+    client would see. Not a Spring Boot application: plain JUnit 5 + a raw
+    java.net.http.HttpClient.
+  </description>
+
+  <properties>
+    <!-- Overridable via `-DskipE2E=false`; see the surefire configuration below for why this
+         module's suite does not run as part of the default `verify`. -->
+    <skipE2E>true</skipE2E>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- Parsing REST responses only — this module has no Spring context of its own, so Jackson
+           doesn't arrive transitively the way it does in a web starter. -->
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- Direct JDBC seeding of inventory-service's stock_items — this module never imports
+           another service's internal Java types, so it seeds the same way a human operator running
+           `make seed` effectively does, just for one SKU instead of the full catalog. -->
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Not a bootable app: plain library/test jar, same as conveyor-common. -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <skip>true</skip>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Skipped by the default `verify` run (PLAN.md: every other module's Testcontainers
+               suite already proves correctness at the service level); this module runs standalone
+               via `mvn -pl e2e -am verify -DskipE2E=false`, since it needs `docker compose build`
+               (all five images) plus real wall-clock time no other module's suite needs. -->
+          <skipTests>${skipE2E}</skipTests>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -33,6 +33,7 @@
     <module>payment-service</module>
     <module>saga-orchestrator</module>
     <module>dispatch-service</module>
+    <module>e2e</module>
   </modules>
 
   <properties>

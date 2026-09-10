@@ -53,6 +53,30 @@ jobs:
       - name: mvn verify against Apache Kafka
         run: ./mvnw -B verify -Dconveyor.broker=kafka
 
+  e2e:
+    name: full-pipeline E2E (docker compose, public REST API only)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      # PLAN.md Phase 7: this module is excluded from the default `verify` above (it needs
+      # `docker compose build` of all five images plus real wall-clock time no other module's
+      # suite needs) and only runs here, explicitly, against the real compose stack.
+      - name: mvn verify (e2e module only)
+        run: ./mvnw -B -pl e2e verify -DskipE2E=false
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose logs --no-color || true
+
   security-scan:
     name: Trivy filesystem scan
     runs-on: ubuntu-latest
