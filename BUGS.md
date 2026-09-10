@@ -20,6 +20,52 @@ Format for each entry:
 
 ---
 
+## [BUG-0015] Frontend generated-client Pageable calls 400'd; springdoc's OpenAPI schema shapes `Pageable` as nested, but Spring's resolver binds it flat
+- **Date:** 2026-09-10
+- **Phase:** Phase 8 — Live ops dashboard
+- **Severity:** Medium (broke every list-backed screen — the kanban board, the order-placement
+  form's SKU picker, and the admin inventory table — on first live run against the real stack; caught
+  immediately, not shipped)
+- **Symptom:** live in the browser (not just unit tests), the kanban board never left "Loading
+  orders…" and the SSE indicator stuck on "Reconnecting…"; network inspection showed `GET
+  /api/v1/orders?pageable[size]=200 → 400 Bad Request`.
+- **Root cause:** springdoc represents a Spring Data `Pageable` controller argument as a nested
+  `pageable: {page, size, sort}` object in the generated OpenAPI schema, which `openapi-typescript`
+  faithfully turns into a nested TS type — but Spring's actual `PageableHandlerMethodArgumentResolver`
+  binds `page`/`size`/`sort` as flat, top-level query parameters, not `pageable[size]=200` bracket
+  notation. `openapi-fetch`'s default query serializer produces the bracketed form from the nested
+  type, which Spring's resolver can't parse. A generated-types client following the spec exactly still
+  produces a request the real server rejects — the spec and the wire behavior disagree.
+- **Fix:** a custom `querySerializer` in `frontend/src/api/client.ts`, applied to `orderClient` and
+  `inventoryClient` (the two clients with `Pageable`-backed endpoints), flattens a top-level
+  `pageable` key's own fields before serializing instead of nesting them.
+- **Status:** Fixed.
+
+---
+
+## [BUG-0016] Dashboard's "make this one fail" control called the wrong path for payment-service's chaos-profile test endpoint, and the stack didn't run that profile by default
+- **Date:** 2026-09-10
+- **Phase:** Phase 8 — Live ops dashboard
+- **Severity:** Low (a demo-only control; the order-placement path itself was unaffected)
+- **Symptom:** checking "make this one fail" and placing an order never actually forced a decline —
+  the order confirmed normally.
+- **Root cause:** two independent gaps. (1) the frontend called `POST /api/v1/test/failure-mode`,
+  but `PaymentTestController` is mapped at `/test` (deliberately outside `/api/v1`, since it's a
+  test-only surface, not part of the versioned public API — ARCHITECTURE.md §10.4 already documented
+  this correctly; the frontend code just guessed the wrong path). (2) even with the right path,
+  payment-service wasn't running with `SPRING_PROFILES_ACTIVE=chaos` in `docker-compose.yml`, so
+  `PaymentTestController` (`@Profile("chaos")`) wasn't registered at all.
+- **Fix:** corrected the frontend's fetch path and Vite proxy rule to `/test/failure-mode`, and set
+  `SPRING_PROFILES_ACTIVE: ${PAYMENT_SERVICE_PROFILES:-chaos}` as `docker-compose.yml`'s local-dev
+  default for payment-service — safe because `ChaosProfileStartupGuard` still refuses to start if
+  `prod` is ever active alongside it, and the mock gateway's base failure rates stay `0` regardless of
+  profile, so nothing about normal order flow changes. Verified live via Playwright
+  (`forced-failure.spec.ts`): the control now genuinely forces a decline, drives the saga through
+  `RELEASE_INVENTORY`/`COMPENSATION`, and the order ends `CANCELLED`.
+- **Status:** Fixed.
+
+---
+
 ## [BUG-0014] `e2e` module's direct-JDBC seeding hardcoded `localhost:5432`, which silently connects to whichever Postgres wins that host port — not necessarily this stack's container
 - **Date:** 2026-09-10
 - **Phase:** Phase 7 — Dispatch/Notification Service and full-pipeline E2E

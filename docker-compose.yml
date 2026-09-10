@@ -92,6 +92,10 @@ services:
       SEED_OPS_PASSWORD: ${SEED_OPS_PASSWORD:-ops_local_dev_only}
       SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-admin}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin_local_dev_only}
+      CONVEYOR_SECURITY_JWT_PRIVATE_KEY_PEM: ${CONVEYOR_SECURITY_JWT_PRIVATE_KEY_PEM:-}
+      # Local dev serves the stack over plain http://localhost; a Secure cookie would never
+      # reach the browser there. Real deployments (behind HTTPS) leave this unset (default true).
+      CONVEYOR_SECURITY_JWT_COOKIE_SECURE: "false"
     ports:
       - "8081:8081"
     depends_on:
@@ -133,6 +137,12 @@ services:
       # PaymentDeclineCompensationE2ETest to trigger the payment-declined compensation path for
       # real, over the public REST API, without touching the chaos profile at all.
       CONVEYOR_PAYMENT_GATEWAY_DECLINE_RATE: ${CONVEYOR_PAYMENT_GATEWAY_DECLINE_RATE:-0}
+      # PLAN.md Phase 8's dashboard ships a "make this one fail" control that calls POST
+      # /test/failure-mode -- that control is only real if this service actually runs with the
+      # `chaos` profile locally. The ChaosProfileStartupGuard (conveyor-common) still refuses to
+      # start if `prod` is ever active alongside it, so this is safe to default on for local/demo
+      # use. Override with an empty value to run without it.
+      SPRING_PROFILES_ACTIVE: ${PAYMENT_SERVICE_PROFILES:-chaos}
     ports:
       - "8083:8083"
     depends_on:
