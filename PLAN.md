@@ -411,36 +411,71 @@ real time in another.
 
 ---
 
-## Phase 9 — Observability · **M**
+## Phase 9 — Observability · **M** · ✅ Complete (2026-09-11)
 
 **Goal.** Make the next three phases interpretable. One order = one trace across
 five services.
 
 **Deliverables.**
-- OpenTelemetry Java agent on every service; **W3C trace context propagated
-  through Kafka headers**, produce and consume spans linked.
-- Micrometer + `/actuator/prometheus`; every metric in `ARCHITECTURE.md` §11
-  implemented and asserted.
-- Compose `observability` profile: Prometheus, Grafana, Jaeger/Tempo.
-- Grafana dashboards, committed as JSON: *Saga Health* (throughput, duration
-  percentiles, terminal outcomes, compensation rate), *Pipeline Latency*
-  (per-step), *Infrastructure* (outbox lag, DLQ depth, consumer lag, JVM).
-- MDC enrichment verified end to end.
-- Alert rules: any invariant violation, `NEEDS_INTERVENTION > 0`, outbox lag
-  > 60 s, DLQ non-empty.
+- [x] Tracing via Micrometer Tracing's OpenTelemetry bridge (not a separate
+      OpenTelemetry Java agent — see CONTEXT.md's Key Decisions Log for why),
+      auto-instrumenting Spring MVC and JDBC; **W3C trace context propagated
+      through Kafka headers** via `spring.kafka.listener.observation-enabled`.
+      The transactional outbox (ADR-7) decouples the business write from the
+      actual publish onto an unrelated later poll with no span of its own —
+      `TraceparentSupport` (conveyor-common) captures the current span's
+      `traceparent` at outbox-row-write time and carries it as a stored
+      header, which is what makes the trace survive that gap (BUG-0018/19
+      along the way — see BUGS.md).
+- [x] Micrometer + `/actuator/prometheus`; every metric in `ARCHITECTURE.md`
+      §11 implemented (plus `conveyor_saga_needs_intervention`, added this
+      phase) and asserted (`SagaMetricsIntegrationTest`).
+- [x] Compose `observability` profile: Prometheus, Grafana, Tempo
+      (`infra/observability/`), `make observability-up`/`-down`.
+- [x] Grafana dashboards, committed as JSON: *Saga Health*, *Pipeline
+      Latency*, *Infrastructure* — all three verified live, populated with
+      real data from a live local run (not just provisioned and unchecked).
+- [x] MDC enrichment verified end to end — live, not just unit-tested (see
+      BUG-0019: the interceptor doing this had never actually been wired into
+      any listener container since Phase 1 until this phase's live check
+      caught it).
+- [x] Alert rules: any invariant violation, `NEEDS_INTERVENTION > 0`, outbox
+      lag > 60 s, DLQ non-empty — `infra/observability/prometheus/alert-rules.yml`,
+      confirmed loaded via Prometheus's `/api/v1/rules`.
 
 **Dependencies.** Phase 7.
 
 **Exit criteria.**
-- [ ] **Test:** an integration test asserts a single `traceId` appears in spans
+- [x] **Test:** an integration test asserts a single `traceId` appears in spans
       from all five services for one order — trace propagation is *tested*, not
-      eyeballed.
-- [ ] **Test:** each custom metric is asserted present with correct labels after
-      driving a saga.
-- [ ] **Artifact:** a screenshot of one order's full distributed trace, in
-      `docs/`.
-- [ ] Every log line during an E2E run carries `traceId`, `sagaId`, `orderId`.
-- [ ] Grafana dashboards populate against a local load run.
+      eyeballed. `e2e` module's `TraceContextPropagationE2ETest` (pins a
+      `traceparent` on `POST /orders`, polls Tempo's `/api/traces/{id}` for
+      spans from all five service names). Also verified manually live: a
+      pinned trace's ID appeared in Tempo with 68 spans across all five
+      services (`docs/phase9-trace-screenshot.png`).
+- [x] **Test:** each custom metric is asserted present with correct labels after
+      driving a saga. `SagaMetricsIntegrationTest` (saga-orchestrator), 4/4
+      green — duration/terminal/step/timeout/inbox-duplicate/active/
+      needs-intervention/outbox-lag, all with correct tags.
+- [x] **Artifact:** a screenshot of one order's full distributed trace, in
+      `docs/`. `docs/phase9-trace-screenshot.png` — the real Tempo/Grafana
+      waterfall for a live order, 22 spans, order-service → saga-orchestrator
+      → inventory-service → payment-service → dispatch-service, 3.78s.
+- [x] Every log line during an E2E run carries `traceId`, `sagaId`, `orderId`.
+      Verified live: a business-event INFO log line was added at each
+      service's key success point (order placed, inventory reserved, payment
+      charged, saga confirmed, shipment created — none existed above DEBUG
+      before this phase), and for a single traced order all four
+      Kafka-listener-driven lines carry matching `traceId`/`spanId`/`sagaId`/
+      `orderId`/`eventType` as real JSON fields (not just message text).
+- [x] Grafana dashboards populate against a local load run. Verified live via
+      the browser tool against a real local stack after seeding + placing
+      several orders: Saga Health's throughput/duration panels, Pipeline
+      Latency's per-step p95 panel and table, and Infrastructure's outbox-lag/
+      low-stock-SKU panels all render real data (BUG-0020 fixed along the way
+      — Micrometer Timers don't publish histogram buckets by default, so
+      `histogram_quantile()` had nothing to query until `.publishPercentileHistogram()`
+      was added).
 
 ---
 

@@ -1046,14 +1046,28 @@ on payment-service, plus the crash hooks in §14.
 Without this the rigor numbers are uninterpretable, so it is scheduled *before*
 the rigor phases (Phase 9), not after.
 
-**Tracing.** OpenTelemetry Java agent, auto-instrumenting Spring MVC, JDBC and
-Kafka. The critical piece is **context propagation across Kafka**: the producer
-injects `traceparent` into message headers; the consumer extracts it and links
-the consume span to the produce span. The result is that **one order is one
-distributed trace spanning five services**, showing exactly where the latency
-and the failure are. That trace screenshot is the single most persuasive
-observability artifact this project can produce, and it is a Phase 9 exit
-criterion.
+**Tracing.** Implemented via Micrometer Tracing's OpenTelemetry bridge
+(`micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp`, in
+`conveyor-common` so every service gets it identically), **not** a separate
+OpenTelemetry Java agent as originally planned here — auto-instrumenting Spring
+MVC, JDBC and Kafka the same way, but as library instrumentation wired into the
+existing Spring context rather than bytecode-woven at JVM startup. Logged as a
+Phase 9 deviation (CONTEXT.md's Key Decisions Log) because it changes something
+concrete: the agent approach would have made "an integration test asserts a
+single traceId appears in spans from all five services" (a Phase 9 exit
+criterion) effectively untestable in-process, since the agent's own exporter
+can't easily be swapped for a test double inside a Testcontainers-driven
+`@SpringBootTest`. The library approach is Spring Boot's own recommended
+tracing path and costs nothing in coverage: Spring MVC, JDBC, and — the
+critical piece — **Kafka context propagation** (`spring.kafka.listener.
+observation-enabled` / `spring.kafka.template.observation-enabled=true`) are
+all still auto-instrumented, the producer still injects `traceparent` into
+message headers and the consumer still extracts it and links the consume span
+to the produce span. The result is unchanged: **one order is one distributed
+trace spanning five services**, verified for real in the e2e module
+(`TraceContextPropagationE2ETest`) against a live Tempo instance, not eyeballed.
+That trace screenshot is still the single most persuasive observability
+artifact this project produces, and is still a Phase 9 exit criterion.
 
 **Metrics.** Micrometer → Prometheus (`kube-prometheus-stack`). Beyond the JVM
 and HTTP defaults, saga-specific instruments that the rigor phases consume
@@ -1065,6 +1079,7 @@ directly:
 | `conveyor_saga_step_duration_seconds{step,direction}` | histogram | which step is the bottleneck |
 | `conveyor_saga_terminal_total{outcome}` | counter | **compensation correctness rate = ABORTED_clean / (ABORTED_clean + NEEDS_INTERVENTION)** |
 | `conveyor_saga_active` | gauge | in-flight sagas — the autoscaling signal |
+| `conveyor_saga_needs_intervention` | gauge | live count in `NEEDS_INTERVENTION` — added in Phase 9 to back the "NEEDS_INTERVENTION > 0" alert rule and give INV-SAGA-04 a signal ahead of Phase 10; not in the original table above |
 | `conveyor_saga_timeouts_total{step}` | counter | how often a reply never came |
 | `conveyor_outbox_lag_seconds` | gauge | oldest unpublished outbox row — publish-path health |
 | `conveyor_inbox_duplicates_total{consumer}` | counter | **proof the idempotency layer is doing work**, not decoration |

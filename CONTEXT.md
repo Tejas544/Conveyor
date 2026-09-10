@@ -1,15 +1,14 @@
-# Context — Last updated: 2026-09-10 (Phase 8 complete)
+# Context — Last updated: 2026-09-11 (Phase 9 complete)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 9 — Observability (not started).** Phase 8 closed this session — see
-Completed Phases. Per `PLAN.md`, Phase 9 may be interleaved with Phase 8, but
-no Phase 9 work (OpenTelemetry, Grafana dashboards, the metrics-assertion
-tests) has been done yet; this is a checkpoint, not a silent continuation —
-per `CLAUDE.md` §2.4 the human should sign off before Phase 9 begins.
+**Phase 10 — `conveyor-verifier`: the invariant checker (not started).** Phase
+9 closed this session, human sign-off received to start it ("Start Phase 9 —
+go ahead as planned"). Per `CLAUDE.md` §2.4 the human should checkpoint before
+Phase 10 begins.
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -197,9 +196,57 @@ per `CLAUDE.md` §2.4 the human should sign off before Phase 9 begins.
   by default — now `docker-compose.yml`'s local-dev default). See Key
   Decisions Log for the timeline's data-source choice and the SSE payload
   simplification versus ARCHITECTURE.md §10.1's illustrative shape.
+- Phase 9 — Observability ✅ (2026-09-11). Tracing via Micrometer Tracing's
+  OTel bridge (`micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp`
+  in conveyor-common), not a separate OpenTelemetry Java agent as
+  ARCHITECTURE.md §11 originally specified — see Key Decisions Log for why,
+  and for how the transactional outbox's async publish gap is bridged
+  (`TraceparentSupport`). `/actuator/prometheus` exposed on all five services
+  with a shared `application` tag; `conveyor_outbox_lag_seconds` (gauge, live
+  in `OutboxPoller`) and `conveyor_stock_available{sku}` (inventory-service,
+  `MultiGauge`) are the two §11 metrics that didn't already exist from
+  earlier phases, plus `conveyor_saga_needs_intervention` (not in §11's
+  original table, added to back the alert rule). `docker-compose.yml`'s
+  `observability` profile: Prometheus (`infra/observability/prometheus/`,
+  scrape config + alert rules), Tempo (OTLP receiver), Grafana (provisioned
+  datasources + 3 dashboards under a "Conveyor" folder) —
+  `make observability-up`/`-down`. Tracing/metrics are always on (not gated
+  by the profile) so logs/metrics are real regardless of whether anything is
+  listening.
+  <br>Three real bugs found and fixed via live verification, not just unit
+  tests — see BUGS.md: **BUG-0018** (`TraceparentSupport` was a bare
+  `@Component` outside every service's scanned package tree — silently never
+  wired, broke every order-service test), **BUG-0019** (the far bigger one:
+  `EnvelopeMdcRecordInterceptor`'s `sagaId`/`orderId`/`eventType` MDC
+  enrichment — documented since Phase 1 — had **never actually been wired
+  into any Kafka listener container**, because Spring Boot's
+  `KafkaAnnotationDrivenConfiguration` looks up the interceptor bean via
+  `ObjectProvider<RecordInterceptor<Object,Object>>` and Java generics are
+  invariant, so the bean's `RecordInterceptor<String,String>` signature never
+  matched — only caught because this phase added the first INFO-level
+  business-event log lines the codebase has ever had, letting a live log
+  inspection actually see the gap), and **BUG-0020** (Grafana's p50/p95/p99
+  panels showed "No data" — plain Micrometer `Timer`s don't publish
+  histogram buckets by default; `.publishPercentileHistogram()` added). All
+  fixed and re-verified live.
+  <br>**Test:** `SagaMetricsIntegrationTest` (saga-orchestrator, 4/4 green) —
+  every custom metric asserted present with correct tags after driving a
+  real saga. **Test:** `e2e` module's `TraceContextPropagationE2ETest` — pins
+  a `traceparent` on `POST /orders`, brings the stack up with `--profile
+  observability`, polls Tempo for spans from all five service names.
+  <br>All exit criteria verified live against a real local stack, not just
+  the test suite: a pinned trace showed 68 spans across all five services in
+  Tempo; the same order's log lines across all four Kafka-listener-driven
+  services carried matching `traceId`/`spanId`/`sagaId`/`orderId`/
+  `eventType` as real JSON fields; all three Grafana dashboards rendered
+  real data after seeding and placing several orders; Prometheus's
+  `/api/v1/rules` confirmed all four alert rules loaded. Screenshot
+  artifact: `docs/phase9-trace-screenshot.png` (captured via a one-off
+  Playwright script, `scripts/capture-trace-screenshot.mjs`, not part of the
+  app). Full 7-module reactor green throughout.
 
 ## In Progress
-- **Nothing mid-flight.** Phase 8 closed this session; Phase 9 not started.
+- **Nothing mid-flight.** Phase 9 closed this session; Phase 10 not started.
 
 ## Blockers
 - **None currently open.** BUG-0007 (disk space) is resolved via the data-root
@@ -212,21 +259,27 @@ per `CLAUDE.md` §2.4 the human should sign off before Phase 9 begins.
   Testcontainers' dynamic port mapping, as `e2e` now does) sidesteps this;
   connecting from the host shell via a bare `psql -h localhost -p 5432` does
   not.
+- **Environment note (this machine):** running a live `docker compose
+  --profile observability up` stack *at the same time* as `./mvnw verify`
+  starves the Testcontainers-heavy Surefire forks badly enough to crash a
+  fork outright (hit twice this session before the pattern was recognized) —
+  always tear down any live compose stack before a full `verify` run here.
 
 ## Next Steps
-1. **Checkpoint with the human before Phase 9** (`CLAUDE.md` §2.4) —
-   Observability: OpenTelemetry tracing across all five services + Kafka
-   header propagation, Micrometer/Prometheus metrics from §11, a Grafana
-   `observability` compose profile, the one-trace-per-order screenshot
-   artifact.
-2. Not done as part of Phase 8, worth naming rather than leaving implicit:
-   `saga.intervention` (an SSE event name ARCHITECTURE.md §10.1 lists) has no
-   real source — `NEEDS_INTERVENTION` is reached via
-   `SagaTimeoutSweeper`'s escalation, which publishes no Kafka event today.
-   The dashboard has no live push for it yet; `GET /sagas?state=&stuck=true`
-   still lets an operator find one by polling. Worth a real fix (an event, or
-   a poll-based badge in `AppShell`) whenever Phase 9's metrics work touches
-   this path anyway.
+1. **Checkpoint with the human before Phase 10** (`CLAUDE.md` §2.4) — the
+   invariant checker: `conveyor-verifier`, the 15-invariant catalogue, the
+   seeded-violation negative-control harness, inside-out vs. outside-in
+   detection comparison.
+2. Not done as part of Phase 8, still open: `saga.intervention` (an SSE event
+   name ARCHITECTURE.md §10.1 lists) has no real source —
+   `NEEDS_INTERVENTION` is reached via `SagaTimeoutSweeper`'s escalation,
+   which publishes no Kafka event today. `conveyor_saga_needs_intervention`
+   (Phase 9) at least gives it a Prometheus/Grafana/alert signal now; the
+   dashboard itself still has no live push for it, only
+   `GET /sagas?state=&stuck=true` polling.
+3. `conveyor_invariant_violations_total` (ARCHITECTURE.md §11's table,
+   referenced by Phase 9's own alert rule) does not exist yet — it is
+   `conveyor-verifier`'s own output, Phase 10's job.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -240,6 +293,42 @@ per `CLAUDE.md` §2.4 the human should sign off before Phase 9 begins.
 
 ## Key Decisions Log
 
+- **Phase 9 — tracing is Micrometer Tracing's OpenTelemetry bridge, not the
+  OpenTelemetry Java agent ARCHITECTURE.md §11 originally specified.** The
+  agent instruments by bytecode-weaving at JVM startup, outside Spring's own
+  context — which would have made the phase's own exit criterion (an
+  integration test asserting one `traceId` spans all five services) hard to
+  drive from a Testcontainers-based test without a live collector in the
+  loop. The library approach is Spring Boot's own recommended tracing path,
+  costs nothing in coverage (Spring MVC, JDBC, and Kafka via
+  `spring.kafka.*.observation-enabled` are all still auto-instrumented), and
+  is what let `TraceContextPropagationE2ETest` and the live verification in
+  this session actually happen. Full reasoning in `ARCHITECTURE.md` §11.
+- **Phase 9 — the transactional outbox (ADR-7) needed a dedicated mechanism
+  to keep a trace alive across its own async publish gap.** `OutboxPoller`
+  publishes on a `@Scheduled` thread with no span of its own, decoupled in
+  time from the request/message that created the outbox row — naive
+  auto-instrumentation would start a *new*, disconnected trace for every
+  published message, silently defeating "one order is one trace." Fixed by
+  `TraceparentSupport` (conveyor-common): the current span's W3C
+  `traceparent` is captured at outbox-row-write time (same transaction as
+  the business write) and stored as one of the row's existing `headers`,
+  which `OutboxPoller` already copies onto the outgoing `ProducerRecord`
+  unchanged. `spring.kafka.template.observation-enabled` is `false` on
+  purpose (every send in this system goes through the outbox — see ADR-7 —
+  so nothing benefits from live auto-injection, and leaving it on would have
+  overwritten the stored header with a new rootless trace at send time).
+- **Phase 9 — a business-event INFO log line was added at one place in each
+  of the five services** (order placed, inventory reserved, payment charged,
+  saga confirmed order, shipment created) **where none existed above DEBUG
+  before.** Every prior phase's application-level logging was DEBUG or
+  WARN/ERROR-on-failure only, which meant "every log line during an E2E run
+  carries traceId/sagaId/orderId" (this phase's own exit criterion) had
+  nothing at INFO to actually verify against. These five lines are also what
+  surfaced BUG-0019 (`EnvelopeMdcRecordInterceptor` never actually wired into
+  any listener container, since Phase 1) — a gap five prior phases' worth of
+  live-compose runs never caught, because nothing had ever logged anything
+  at INFO from inside a listener's call stack until now.
 - **Phase 8 — the per-order timeline reads saga-orchestrator's own
   `GET /sagas/{orderId}` directly, rather than reconstructing step/direction
   semantics from the generic SSE `order.step` events.** `saga_steps` (`seq`,

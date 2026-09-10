@@ -20,6 +20,101 @@ Format for each entry:
 
 ---
 
+## [BUG-0020] Grafana's p50/p95/p99 panels showed "No data" — Micrometer Timers don't publish histogram buckets by default
+- **Date:** 2026-09-11
+- **Phase:** Phase 9 — Observability
+- **Severity:** Medium (two of three Grafana dashboards had dead panels; caught by the Phase 9 exit
+  criterion "Grafana dashboards populate against a local load run" before being reported done)
+- **Symptom:** live in Grafana, "Saga duration (p50/p95/p99)" (Saga Health) and both panels on
+  Pipeline Latency showed "No data" despite real sagas having completed; `curl
+  .../actuator/prometheus | grep conveyor_saga_duration_seconds` showed `_count`/`_sum`/`_max`
+  samples but no `_bucket` samples, and likewise for `http_server_requests_seconds`.
+- **Root cause:** a plain Micrometer `Timer.builder(...).register(registry)` only exports
+  `_count`/`_sum`/`_max` to Prometheus; the `_bucket` series `histogram_quantile()` needs requires
+  explicitly opting into histogram publishing. `SagaMetrics`'s two timers
+  (`conveyor_saga_duration_seconds`, `conveyor_saga_step_duration_seconds`) never did, and Spring
+  Boot's own `http.server.requests` Timer has the same default.
+- **Fix:** `.publishPercentileHistogram()` added to both `Timer.builder(...)` calls in
+  `SagaMetrics`; `management.metrics.distribution.percentiles-histogram."[http.server.requests]":
+  true` added to all five services' `application.yml`. Verified live afterward: both dashboards'
+  p50/p95/p99 panels render real data.
+- **Status:** Fixed.
+
+## [BUG-0019] `EnvelopeMdcRecordInterceptor` silently never wired into any listener container since Phase 1 — `sagaId`/`orderId`/`eventType` never actually reached MDC
+- **Date:** 2026-09-11
+- **Phase:** Phase 9 — Observability (bug is from Phase 1; only now caught)
+- **Severity:** High — a documented, load-bearing capability (ARCHITECTURE.md §11: "MDC populated
+  from the message envelope by a shared Kafka interceptor") silently did nothing for the entire
+  project's life until this phase's live log inspection caught it. Every prior phase's mention of
+  MDC enrichment working was true only for `traceId`/`spanId` (added this phase) — `sagaId`/
+  `orderId`/`eventType` were never actually present on a real log line.
+- **Symptom:** during Phase 9's live verification, `docker compose logs <service> | grep
+  '"orderId":"'` across all five services returned **zero** matches, despite dozens of Kafka
+  messages having been processed across every phase's live-compose runs and E2E suites. `traceId`/
+  `spanId` (Phase 9's own addition) appeared correctly; `sagaId`/`orderId`/`eventType` never did.
+- **Root cause:** `EnvelopeMdcRecordInterceptor` implemented `RecordInterceptor<String, String>`,
+  matching every consumer's actual `StringDeserializer`. But Spring Boot's
+  `KafkaAnnotationDrivenConfiguration` looks up a candidate bean via
+  `ObjectProvider<RecordInterceptor<Object, Object>>` (confirmed by decompiling
+  `spring-boot-autoconfigure-3.5.16.jar`) — Java generics are invariant, so a bean typed
+  `RecordInterceptor<String, String>` never satisfies that lookup. `getIfUnique()` on the provider
+  returned `null` every time, so `ConcurrentKafkaListenerContainerFactoryConfigurer` never called
+  `factory.setRecordInterceptor(...)`, and the interceptor — despite existing as a perfectly valid
+  bean in the context — was never attached to any listener container. No exception, no log
+  message: a pure silent no-op. `KafkaMdcAutoConfiguration`'s own Javadoc asserted "Spring Boot's
+  Kafka autoconfiguration wires any such bean into the autoconfigured
+  ConcurrentKafkaListenerContainerFactory automatically" — true in general, but only for the exact
+  generic signature Boot's configurer actually asks for, which nothing had verified against a live
+  container until now.
+- **Fix:** `EnvelopeMdcRecordInterceptor` now implements `RecordInterceptor<Object, Object>` (both
+  `intercept`/`afterRecord` and the `ConsumerRecord<Object, Object>` parameter), casting
+  `record.value()` to `String` internally — safe, since every consumer's value deserializer is in
+  fact `StringDeserializer`. Verified live afterward: `sagaId`/`orderId`/`eventType` now appear as
+  real MDC-driven JSON fields on Kafka-listener-invoked log lines across all five services for a
+  single traced order.
+- **Status:** Fixed.
+
+## [BUG-0018] `TraceparentSupport` bean not found — every order-service test failed to start its context
+- **Date:** 2026-09-11
+- **Phase:** Phase 9 — Observability
+- **Severity:** High (broke the entire order-service test suite outright; caught by the full reactor
+  `verify` before being reported as done)
+- **Symptom:** `./mvnw verify` failed every single test class in `order-service` with `Parameter 3 of
+  constructor in com.conveyor.order.service.OrderService required a bean of type
+  'com.conveyor.common.tracing.TraceparentSupport' that could not be found.`
+- **Root cause:** `TraceparentSupport` (added this phase to carry the current span's `traceparent`
+  through the outbox — see the Key Decisions Log) was annotated `@Component`, but it lives in
+  `conveyor-common`'s `com.conveyor.common.tracing` package, outside every service's own
+  `@SpringBootApplication` package tree — plain component scanning never reaches it. Every other
+  conveyor-common bean in this codebase is registered through the project's
+  `@AutoConfiguration`/`AutoConfiguration.imports` mechanism for exactly this reason; this one was
+  added as a bare `@Component` by mistake, the one inconsistency with the established pattern.
+- **Fix:** new `TracingAutoConfiguration` (`@AutoConfiguration`, `@ConditionalOnClass(Tracer.class)`)
+  registers it as a `@Bean`; `TraceparentSupport` itself dropped `@Component`; added to
+  `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`.
+- **Status:** Fixed.
+
+## [BUG-0017] Grafana container failed to start: nested bind mount inside a read-only bind mount
+- **Date:** 2026-09-11
+- **Phase:** Phase 9 — Observability
+- **Severity:** Medium (blocked `make observability-up` entirely; caught immediately on first live
+  run, never shipped)
+- **Symptom:** `docker compose --profile observability up` failed to create the `grafana` container:
+  `OCI runtime create failed: ... unable to start container process: error during container init:
+  error mounting ".../infra/observability/grafana/dashboards" to rootfs at
+  "/etc/grafana/provisioning/dashboards/json": create mountpoint ...: read-only file system`.
+- **Root cause:** `docker-compose.yml` mounted the dashboard JSON directory at
+  `/etc/grafana/provisioning/dashboards/json`, nested *inside* `/etc/grafana/provisioning`, which was
+  itself mounted `:ro`. Docker has to `mkdir` the inner mount's mountpoint inside the outer mount's
+  merged filesystem before bind-mounting onto it; it can't do that when the outer mount is read-only,
+  so container creation fails outright — this has nothing to do with Grafana specifically, it is a
+  general Docker bind-mount nesting constraint.
+- **Fix:** the dashboards directory is now mounted at `/var/lib/grafana/dashboards-json` instead —
+  nested under the `grafana-data` *named volume* mount (`/var/lib/grafana`), which is writable, not
+  under the read-only provisioning mount. `infra/observability/grafana/provisioning/dashboards/
+  dashboards.yml`'s provider `path` updated to match.
+- **Status:** Fixed.
+
 ## [BUG-0015] Frontend generated-client Pageable calls 400'd; springdoc's OpenAPI schema shapes `Pageable` as nested, but Spring's resolver binds it flat
 - **Date:** 2026-09-10
 - **Phase:** Phase 8 — Live ops dashboard
