@@ -20,6 +20,70 @@ Format for each entry:
 
 ---
 
+## [BUG-0007] Host C: drive full — `docker compose up --build` fails, blocking Phase 3's live health check
+- **Date:** 2026-09-10
+- **Phase:** Phase 3 — Order Service: REST, aggregate, outbox
+- **Severity:** High (blocks the "docker compose up still fully healthy" exit criterion; not a
+  defect in Conveyor itself)
+- **Symptom:** `docker compose up -d --build` failed with `no space left on device` while building
+  the order-service image. `docker system df` then hung indefinitely rather than erroring.
+- **Root cause:** the host C: drive is at 226 GB / 226 GB used, 17 MB free (`df -h`). Checked
+  Docker Desktop's own WSL2 disk file (`docker_data.vhdx`) directly — it is 24 GB, nowhere near
+  large enough to account for this, so this is **not** Docker/Testcontainers state accumulated by
+  this project. Something else on the host's system drive has filled it, and finding out what is
+  outside this repo's scope and not something to go hunting through and deleting unilaterally on a
+  system drive.
+- **Fix:** none applied. This needs the human to free space on `C:` (or point Docker Desktop's data
+  root at a drive with room) before `docker compose up` can be re-verified. Everything short of the
+  live compose stack was still verified this phase: the full reactor `./mvnw verify` (all 7
+  modules, real Testcontainers Postgres/Redpanda/Mongo per test class) passed clean immediately
+  before the disk filled.
+- **Status:** Open — blocked on the human freeing disk space on `C:`. Unblocks when: `docker
+  compose up -d --build` succeeds and all 8 containers/5 health endpoints are re-verified `UP`
+  (same check as BUG-0002/BUG-0004's resolutions).
+
+---
+
+## [BUG-0006] `Order.items` lazy collection accessed outside its transaction → 500 on every GET
+- **Date:** 2026-09-10
+- **Phase:** Phase 3 — Order Service: REST, aggregate, outbox
+- **Severity:** Medium (both read endpoints that return items were completely broken)
+- **Symptom:** `GET /orders/{id}` and `GET /orders` both returned `500` with a Jackson
+  `InvalidFormatException` claiming `OrderStatus` couldn't deserialize the value `500` — a
+  misleading symptom, because the client-side test was deserializing the *error body* (a
+  `ProblemDetail`, whose own `status` field really is the integer 500) into `OrderDetailResponse`
+  after the server had already failed for an unrelated reason.
+- **Root cause:** `OrderService.getOrder()`/`searchOrders()` are `@Transactional(readOnly = true)`
+  and return the `Order` entity itself; `OrderDetailResponse.from(order)` — which calls
+  `order.getItems()` — runs in `OrderController`, **after** that transaction has already closed.
+  `items` is a default-lazy `@OneToMany`, so accessing it there throws
+  `LazyInitializationException`, which conveyor-common's generic exception handler converts to a
+  bare 500 with no indication of the real cause.
+- **Fix:** `@OneToMany(..., fetch = FetchType.EAGER)` on `Order.items` — order and its line items
+  are always read together in this service (`OrderDetailResponse`, the `OrderPlaced` payload), so
+  there is no case where lazy loading would have saved a query, only a case where it silently broke
+  reads taken outside the aggregate's own transactional boundary.
+- **Status:** Fixed.
+
+---
+
+## [BUG-0005] Postgres can't infer a JPQL bind parameter's type from `:param is null` alone
+- **Date:** 2026-09-10
+- **Phase:** Phase 3 — Order Service: REST, aggregate, outbox
+- **Severity:** Medium (the one filtered list endpoint, `GET /orders`, was completely broken)
+- **Symptom:** `GET /orders?status=PLACED` returned `500`; server log showed
+  `PSQLException: ERROR: could not determine data type of parameter $3`.
+- **Root cause:** `OrderRepository.search`'s JPQL used the common "optional filter" pattern —
+  `(:from is null or o.createdAt >= :from)` — for the `from`/`to` `Instant` parameters. Postgres's
+  prepared-statement parameter typing can't infer a type from a bare `? is null` comparison with no
+  other type context in that branch, and rejects the query outright rather than guessing.
+- **Fix:** `cast(:from as timestamp) is null` (same for `:to`) — the cast gives Postgres an
+  explicit type to bind the parameter as, and the query behaves identically for callers, who never
+  see JPQL at all.
+- **Status:** Fixed.
+
+---
+
 ## [BUG-0004] Shared-fork Testcontainers Postgres becomes unreachable for every test class after the first
 - **Date:** 2026-09-10
 - **Phase:** Phase 2 — Data layer, domain model and migrations

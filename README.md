@@ -5,10 +5,10 @@ distributed transactions over Kafka, polyglot persistence (PostgreSQL +
 MongoDB), and a live ops dashboard — the service-layer counterpart to
 [Anvil](../Anvil)'s storage-engine-level 2PC.
 
-> **Status: Phase 1 (repo scaffolding) in progress.** This README is a stub;
-> it grows into the full project overview (architecture diagram, results,
-> "what each part demonstrates") in Phase 16. See [`CONTEXT.md`](CONTEXT.md)
-> for exactly where things stand right now.
+> **Status: Phase 3 (Order Service) complete, Phase 4 (Inventory Service) next.**
+> This README is a stub; it grows into the full project overview (architecture
+> diagram, results, "what each part demonstrates") in Phase 16. See
+> [`CONTEXT.md`](CONTEXT.md) for exactly where things stand right now.
 
 ## What this is
 
@@ -50,6 +50,50 @@ Health endpoints once everything is up:
 | payment-service | 8083 | http://localhost:8083/actuator/health |
 | saga-orchestrator | 8084 | http://localhost:8084/actuator/health |
 | dispatch-service | 8085 | http://localhost:8085/actuator/health |
+
+Each service publishes an OpenAPI spec at `/v3/api-docs` and a browsable UI at
+`/swagger-ui.html` (e.g. http://localhost:8081/swagger-ui.html for orders).
+
+Seed demo data (idempotent — safe to run again):
+
+```bash
+make seed   # ops/admin users + 50 catalog SKUs with stock
+```
+
+Place an order (order-service is the only service with real business logic so
+far — see "Where things stand" below):
+
+```bash
+curl -X POST http://localhost:8081/api/v1/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+        "customerId": "9b2ecb1a-0000-4000-8000-000000000003",
+        "items": [{ "sku": "SKU-0001", "quantity": 2, "unitPrice": 9.99 }],
+        "shippingAddress": { "line1": "1 Test St", "city": "Testville", "postalCode": "00000", "country": "IN" },
+        "currency": "USD",
+        "paymentMethodToken": "tok_test_visa"
+      }'
+# 202 Accepted, {"orderId": "...", "sagaId": null, "status": "PLACED"}
+
+curl http://localhost:8081/api/v1/orders/<orderId>
+curl http://localhost:8081/api/v1/orders/summary
+```
+
+`OrderPlaced` reaches `conveyor.order.events.v1` within ~200ms via the
+transactional outbox poller — `docker compose logs order-service` shows it,
+or consume the topic directly with `rpk topic consume` inside the `redpanda`
+container.
+
+## Where things stand
+
+Only **order-service** has real business logic implemented (Phase 3): the
+order aggregate and its guarded state machine, `POST/GET /orders`, the
+transactional outbox + polling publisher (`conveyor-common`, reused by every
+service from Phase 4 on), and a consumer that will project saga replies onto
+order status once Phase 6 (saga-orchestrator) exists — a no-op today by
+design. The other four services have their data layer (Phase 2: migrations,
+JPA entities, Mongo validators) but no REST APIs or Kafka consumers/producers
+yet; those land in Phases 4–7.
 
 ## Building and testing
 

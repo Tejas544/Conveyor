@@ -5,7 +5,8 @@ state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 3 — Order Service: REST, aggregate, outbox · Not started**
+**Phase 3 — Order Service: REST, aggregate, outbox · Code complete, tests
+green; blocked on one live exit criterion — see Blockers**
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -52,20 +53,49 @@ a minute.
   had its Postgres connections refused; fixed via `reuseForks=false`).
 
 ## In Progress
-- Nothing — between phases.
+- Phase 3 implementation is **written and fully green under `./mvnw verify`**:
+  order aggregate with a guarded state machine (`Order.transitionTo`,
+  `OrderStateMachineTest` — every legal pair succeeds, every illegal pair
+  rejected); `POST/GET /orders`, `GET /orders/{id}`, `GET /orders/summary`
+  (RFC 9457 errors, OpenAPI via springdoc); the transactional outbox
+  poller (`com.conveyor.common.outbox.OutboxPoller`) — generic plain-JDBC
+  `SELECT … FOR UPDATE SKIP LOCKED`, reusable by every later service unchanged;
+  `Idempotency-Key` support (202 on create, 200 with the original body on
+  replay); `SagaEventProjectionListener` projecting saga replies onto
+  `orders.status`, inbox-deduplicated — a verified no-op today since nothing
+  publishes those events until Phase 6, exercised in tests by hand-publishing
+  a fake reply; `order-placed.schema.json` + a `SchemaValidator` helper in
+  `conveyor-contracts` for the contract test (ADR-6).
+- **Verified:** full reactor `./mvnw verify` green — all 7 modules, including
+  the outbox-crash-safety test (order committed with the poller disabled,
+  simulating "process killed before the poller ever ran"; triggering the
+  poller afterward publishes the event exactly once), the `OrderPlaced`
+  contract test against its JSON Schema, and the idempotency-key test.
+- **Not yet verified this session:** `docker compose up` → all 5 services
+  healthy with the new order-service code (Phase 3's last exit criterion) —
+  blocked, see Blockers.
 
 ## Blockers
-- None.
+- **Host `C:` drive is full** (BUGS.md BUG-0007): 17 MB free out of 226 GB,
+  unrelated to this project (Docker Desktop's own WSL2 disk is only 24 GB).
+  `docker compose up -d --build` fails with "no space left on device" on the
+  order-service image build. Not something to hunt through and free
+  unilaterally on the human's system drive — left for the human to resolve.
+  **Unblocks when:** the human frees space on `C:` (or repoints Docker
+  Desktop's data root); then re-run `docker compose up -d --build` and
+  confirm all 5 health endpoints return `UP` to close out Phase 3.
 
 ## Next Steps
-1. Begin Phase 3 (`PLAN.md`): Order Service REST API (`POST /orders`,
-   `GET /orders/{id}`, `GET /orders`, `GET /orders/summary`), the order
-   aggregate's guarded state machine, the transactional outbox poller in
-   `conveyor-common` (first real use — Phase 2 only modeled the table/entity),
-   and consumers projecting saga replies onto `orders.status`.
-2. Phase 3's headline test is outbox crash safety (kill the publisher between
-   commit and publish; on restart the event still reaches Kafka exactly once)
-   — design the poller with that test in mind from the start.
+1. Once `C:` has space: `docker compose up -d --build`, confirm all 5
+   services healthy, smoke-test `POST /api/v1/orders` end to end per the
+   README quickstart.
+2. Mark Phase 3 complete in this file once that's done.
+3. Begin Phase 4 — Inventory Service (`PLAN.md`): `ReserveInventory`/
+   `ReleaseInventory` consumers with inbox dedup, the guarded conditional
+   `UPDATE` reservation (ADR-9, schema already in place from Phase 2), and
+   the concurrency test (50 threads, one winner) that's this phase's
+   headline exit criterion. Independent of Phase 5 (Payment) — either could
+   go next.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -80,6 +110,15 @@ a minute.
 
 Full reasoning for each is in `ARCHITECTURE.md` §3.
 
+- **Phase 3 — `POST /orders` requires `unitPrice` per item and a top-level
+  `currency`**, though ARCHITECTURE.md §10.1's example request omits both.
+  order-service has no synchronous call to Inventory Service's catalog to
+  resolve a price from — services never call each other synchronously by
+  design — so the client supplies both explicitly rather than the server
+  guessing or reaching across a service boundary it shouldn't have. Logged
+  here because `OrderPlaced`'s payload (§6.3) does list `unitPrice` per item,
+  so this is closing a gap the architecture doc left implicit, not
+  contradicting it.
 - **Phase 2 — dispatch-service gets an `outbox` table**, even though
   `ARCHITECTURE.md` §4's ownership table lists only `shipments, inbox` for it.
   ADR-7 ("no service ever writes its database and publishes to Kafka as two
