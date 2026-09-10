@@ -20,6 +20,54 @@ Format for each entry:
 
 ---
 
+## [BUG-0012] `docker compose up` crash-looped: saga-orchestrator's DB role/pg_hba entry never existed on the persistent Postgres volume
+- **Date:** 2026-09-10
+- **Phase:** Phase 6 — Saga Orchestrator
+- **Severity:** High (blocked live compose verification of all 5 services, not just saga-orchestrator — a cascading dependency failure)
+- **Symptom:** `docker compose up -d --build` brought all 8 containers up, but `saga-orchestrator`,
+  `order-service`, `inventory-service`, `payment-service`, and `dispatch-service` all crash-looped on
+  startup with `FATAL: no pg_hba.conf entry for host "...", user "saga_orchestrator", database
+  "saga_orchestrator", no encryption`.
+- **Root cause:** the Postgres data volume (`conveyor_postgres-data`) had been created in an earlier
+  session, before `saga-orchestrator` existed as a service. `infra/postgres/init-service-databases.sh`
+  (which creates each service's role/database/grants) only runs once, on a *fresh* volume — Postgres
+  never re-runs init scripts against an existing data directory. The volume therefore had no
+  `saga_orchestrator` role at all, and every other service's container failed to start in turn purely
+  as a `depends_on` cascade from Postgres never reaching a state those services could use.
+- **Fix:** `docker compose down -v` (removes the stale volume) followed by `docker compose up -d
+  --build` (recreates it, re-running the init script for all five service roles/databases). Not a
+  Conveyor code defect — a normal consequence of adding a sixth service database to a
+  previously-initialized local dev volume. `make reset` already does exactly this; recorded here so a
+  future session recognizes the symptom immediately instead of re-diagnosing it.
+- **Status:** Fixed. Confirmed via a subsequent live `docker compose up -d --build`: all 8 containers
+  `Healthy`, all 5 `/actuator/health` endpoints `UP` — closing Phase 3's last open exit criterion at
+  the same time.
+
+---
+
+## [BUG-0011] `OrderPlaced` never carried `paymentMethodToken`, though every consumer of it downstream needs one
+- **Date:** 2026-09-10
+- **Phase:** Phase 6 — Saga Orchestrator
+- **Severity:** Medium (a genuine gap in the frozen spec, caught before any code shipped against it —
+  not a regression)
+- **Symptom:** while implementing `saga-orchestrator`'s `ChargePayment` command construction, discovered
+  that `ChargePaymentPayload` requires a non-null `paymentMethodToken` (ARCHITECTURE.md §6.3), but
+  `OrderPlacedPayload` (§6.3) and the `orders` table (§5.1) never carried one anywhere past
+  `POST /orders`' own request validation — `CreateOrderRequest.paymentMethodToken()` was read, validated
+  `@NotBlank`, and then silently dropped. The saga orchestrator had no way to charge payment at all
+  without it.
+- **Root cause:** `ARCHITECTURE.md` §10.1 requires the field on the request but §6.3's `OrderPlaced`
+  payload definition and §5.1's `orders` schema both predate the saga orchestrator actually needing to
+  read it back out later — a gap in the frozen spec, not an implementation slip in Phase 3 (order-service
+  had nothing to propagate it *to* yet at the time).
+- **Fix:** `paymentMethodToken` added to `Order` (new nullable column, `order-service`
+  `V2__payment_method_token.sql`), to `OrderPlacedPayload` (new required field) and its JSON Schema, and
+  threaded through `OrderService.createOrder`. Logged in `CONTEXT.md`'s Key Decisions Log rather than
+  silently editing `ARCHITECTURE.md`, per `CLAUDE.md` §0.
+- **Status:** Fixed.
+
+---
+
 ## [BUG-0010] `jackson-module-scala` (test-scope, via embedded Kafka) hijacked Hibernate's JSON-column deserialization
 - **Date:** 2026-09-10
 - **Phase:** Phase 4 — Inventory Service, Phase 5 — Payment Service
@@ -123,8 +171,56 @@ Format for each entry:
   image build (a restart may not be enough this time, given it died mid-build rather than merely
   being slow to respond); then re-run `docker compose up -d --build` and confirm all 5 health
   endpoints return `UP`.
-
----
+- **Update (2026-09-10, new session):** Docker responded cleanly at session start
+  (`docker info` returned `ServerVersion: 29.7.2` immediately), and
+  `./mvnw -pl inventory-service -am verify` was re-run live and confirmed green — **44/44 tests**,
+  independently reconfirming Phase 4's exit criteria (not re-trusting the prior session's record).
+  `docker compose up -d --build` was then attempted again: all 5 images built and all 8 containers
+  were created, but `postgres-1`, `mongo-1`, and `redpanda-1` all failed their **start** step with
+  `Error dependency <service> failed to start`, and the underlying Docker Desktop API call itself
+  returned `request returned 500 Internal Server Error ... check if the server supports the
+  requested API version`, propagated from `http://...dockerDesktopLinuxEngine/v1.55/...`. Every
+  dependent service container (order/inventory/payment/dispatch/saga-orchestrator) then failed to
+  start in turn, purely as a cascade. A follow-up `docker compose ps` then hung indefinitely with no
+  output, reproducing BUG-0008's original symptom. **Third distinct symptom of the same underlying
+  instability** in one bug's lifetime: (1) silent CLI hang, (2) mid-build BuildKit RPC death, (3) a
+  500 from the Docker Desktop API on container start plus a renewed CLI hang. No fix attempted here
+  — same reasoning as above, this is host-level Docker Desktop/WSL2 state, not Conveyor's. Phase 4
+  is unaffected (verified via `./mvnw verify`, which does not depend on `docker compose`); this
+  remains open purely on Phase 3's live-compose-health exit criterion.
+  **Unblocks when:** the human restarts Docker Desktop (or applies the `wsl --unregister
+  docker-desktop[-data]` step from BUG-0002 if a plain restart doesn't hold) and confirms `docker ps`
+  responds and stays responsive through a full `docker compose up -d --build`.
+  A follow-up `docker compose down` (attempted to clean up the partially-started stack above) then
+  surfaced a fourth, more serious symptom: `Error response from daemon: Docker Desktop is unable to
+  start — starting WSL engine: bootstrapping main distribution: ... exit status 0xc00000fd`, i.e. the
+  WSL2 engine itself is now failing to bootstrap — the same *class* of failure as BUG-0002's original
+  disk-provisioning crash-loop, not merely a slow/unresponsive daemon. No cleanup or repair attempted
+  from here for the same reason as above; the partially-created `conveyor-*` containers and volumes
+  are left as-is for the human to inspect or remove once Docker Desktop is recovered, rather than
+  risking `docker compose down -v` mid-instability.
+- **Update (2026-09-10, Phase 6 session):** at session start, `docker ps` responded immediately and
+  the stack from a prior partial attempt was already `Up` — but all five service containers were
+  crash-looping (`FATAL: no pg_hba.conf entry for host ..., user "saga_orchestrator"`), diagnosed and
+  fixed as BUG-0012 (stale Postgres volume predating the sixth service). `docker compose down -v` +
+  `docker compose up -d --build` then succeeded cleanly: **all 8 containers `Healthy`, all 5
+  `/actuator/health` endpoints `UP`** — closing Phase 3's exit criterion for good this session. The
+  stack was then torn down (`docker compose down`, no `-v`) to free resources while `./mvnw verify`
+  ran for the rest of the Phase 6 session. Re-running `docker compose up -d --build` afterward (for
+  Phase 6's own "`docker compose up` → a manually placed order reaches `CONFIRMED`" exit criterion)
+  failed differently again: `payment-service`'s and `inventory-service`'s build stages both crashed
+  with `java.lang.ClassFormatError thrown from the UncaughtExceptionHandler`, and the build overall
+  failed with `target order-service: failed to receive status: rpc error: code = Unavailable desc =
+  error reading from server: EOF` — BuildKit dying mid-multi-service-build again, the exact symptom
+  already on record above. `docker ps`/`docker compose ps` are back to hanging (`docker info` alone
+  intermittently returns). **Fourth+ distinct symptom in this one bug's lifetime**, still the same
+  underlying Docker Desktop/WSL2 instability, not a Conveyor defect — no repair attempted here per
+  the same reasoning as every prior update. Phase 6 is unaffected on correctness: `./mvnw verify`
+  (Testcontainers-backed, does not touch `docker compose`) is green for the full 7-module reactor
+  including all new saga-orchestrator tests. Only Phase 6's own live-compose smoke test is blocked.
+  **Unblocks when:** the human gets Docker Desktop stable through one full `docker compose up -d
+  --build` of all five images; then a manually placed order can be confirmed to reach `CONFIRMED` via
+  the REST API, closing Phase 6 for good.
 
 ## [BUG-0007] Host C: drive full — `docker compose up --build` fails, blocking Phase 3's live health check
 - **Date:** 2026-09-10

@@ -1,15 +1,18 @@
-# Context — Last updated: 2026-09-10
+# Context — Last updated: 2026-09-10 (Phase 6 session)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 6 — Saga Orchestrator · Not started.** Phases 4 (Inventory) and 5
-(Payment) are complete — `./mvnw verify` is green across the full 7-module
-reactor, every exit criterion's test passing live. Phase 3 (Order Service)
-has one item left open: `docker compose up` → all 5 services healthy — see
-Blockers.
+**Phase 6 — Saga Orchestrator · Code complete, `./mvnw verify` green — blocked
+only on the live `docker compose` smoke test.** Every exit criterion has a
+passing test (21/21 new saga-orchestrator tests, 131/131 across the full
+7-module reactor). Phase 3 (Order Service) closed out for real this session —
+`docker compose up -d --build` was independently verified with all 8
+containers `Healthy` and all 5 `/actuator/health` endpoints `UP` — before a
+later re-attempt (for Phase 6's own compose exit criterion) hit the same
+Docker Desktop instability again; see Blockers.
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -108,42 +111,71 @@ Blockers.
   tokens for any service's tests. Also
   `HibernateJsonFormatMapperAutoConfiguration` — see BUGS.md BUG-0010's Key
   Decisions entry below.
+- Phase 3 — Order Service's live-compose exit criterion, finally closed
+  ✅ (2026-09-10, this session). BUG-0012 diagnosed and fixed (stale Postgres
+  volume predating `saga-orchestrator`'s role): `docker compose down -v` +
+  `up -d --build` → all 8 containers `Healthy`, all 5 `/actuator/health`
+  endpoints `UP`, confirmed live with `curl`.
+- Phase 6 — Saga Orchestrator: **code complete, `./mvnw verify` green, live
+  `docker compose` smoke test blocked** (2026-09-10). `saga-orchestrator`
+  now has a real `SagaOrchestrationService` driving `OrderPlacedListener` →
+  `ReserveInventory` → (reply) → `ChargePayment` → (reply) → the pivot
+  (`tryConfirm`, its own transaction — see that class's Javadoc for why) →
+  `OrderConfirmed`; every compensation path (`InventoryReservationFailed`,
+  `PaymentFailed`, and an operator-initiated `POST /sagas/{id}/abort` for the
+  "payment succeeded, then abort anyway" path — see Key Decisions Log for why
+  that's the legitimate trigger, not a blind timeout-driven refund);
+  `SagaTimeoutSweeper` (`FOR UPDATE SKIP LOCKED`, same pattern as
+  `OutboxPoller`) claims expired non-terminal sagas every `sweep-interval` and
+  applies §7.4's timeout policy, escalating to `NEEDS_INTERVENTION` after
+  `max-compensation-attempts`; `POST /sagas/{id}/retry` re-drives it.
+  `GET /sagas/{orderId}`, `GET /sagas?state=&stuck=true`. All 5 saga metrics
+  from §11 wired (`conveyor_saga_active` as a live gauge over
+  `saga_instances`, not a counter). Two chaos points wired
+  (`saga.after-reply-before-state-write`, `saga.after-state-write-before-command`).
+  Closed a real spec gap along the way — `OrderPlaced` never carried
+  `paymentMethodToken` (BUG-0011) — by threading it through `Order`,
+  `OrderPlacedPayload`, and its schema, plus a small
+  `Order`/`OrderPlacedPayload` migration. **21/21 new tests green**
+  (`SagaHappyPathIntegrationTest`, `SagaCompensationIntegrationTest` ×3,
+  `SagaTimeoutIntegrationTest` ×2, `SagaIdempotencyIntegrationTest`,
+  `SagaConcurrentSweepIntegrationTest`, `SagaCommandAndEventContractTest` ×2,
+  `SagaControllerIntegrationTest` ×3, plus the 4 pre-existing scaffold tests),
+  **131/131 across the full reactor** (`./mvnw verify`). Only the live
+  `docker compose up` → "a manually placed order reaches `CONFIRMED`" exit
+  criterion remains unverified — see Blockers.
 
 ## In Progress
-- **Phase 3 (Order Service)** has one item left: `docker compose up` → all 5
-  services healthy. `./mvnw verify` re-confirmed green this session
-  (Testcontainers-backed; outbox-crash-safety, the `OrderPlaced` contract
-  test, and the idempotency-key test all still pass). The live compose check
-  itself is blocked — see Blockers.
-- **Next: Phase 6 — Saga Orchestrator**, not started. Depends on Phases 3–5;
-  Phase 3's one open item doesn't block starting Phase 6's own implementation
-  work, only its own final sign-off.
+- **Nothing mid-flight.** Phase 6's code and tests are done; the only
+  remaining action for either phase is the live compose smoke test, which is
+  blocked on the host's Docker Desktop instability, not on anything left to
+  build.
 
 ## Blockers
-- **`docker compose up` is blocked on Docker Desktop instability** (BUGS.md
-  BUG-0008, updated this session): the daemon recovered mid-session long
-  enough for `./mvnw verify` to run the full reactor clean (all 7 modules,
-  including every Phase 4/5 Testcontainers test), but a subsequent
-  `docker compose up -d --build` died partway through the image builds with a
-  BuildKit RPC error, and the daemon went back to refusing `docker ps`
-  immediately after. Not something to restart/reset unilaterally — Docker
-  Desktop restarts, and especially the WSL2-unregister step BUG-0002 used,
-  are left for the human, per `CLAUDE.md`'s guidance on risky actions
-  affecting the whole machine, not just this repo.
-  **Unblocks when:** the human gets Docker Desktop into a state that survives
-  a full multi-service build (this session's failure was a mid-build crash,
-  not just slowness, so a plain restart may not be enough); then re-run
-  `docker compose up -d --build` and confirm all 5 health endpoints return
-  `UP` to close out Phase 3.
+- **Phase 6's live `docker compose` smoke test is blocked on the same
+  recurring Docker Desktop/WSL2 instability as before** (BUGS.md BUG-0008,
+  updated again this session with a fourth-plus distinct symptom). This
+  session actually *did* get a full clean run earlier — `docker compose down
+  -v` + `up -d --build` brought all 8 containers `Healthy` with all 5 health
+  endpoints `UP`, closing Phase 3 for good — but a later re-attempt (to
+  smoke-test Phase 6's saga flow through the real stack) hit BuildKit dying
+  mid-build again (`ClassFormatError` in two of the five build stages, then
+  `rpc error: code = Unavailable ... EOF`), and `docker ps`/`docker compose
+  ps` are back to hanging. Not something to restart/reset unilaterally per
+  `CLAUDE.md`'s guidance on host-wide risky actions.
+  **Unblocks when:** the human gets Docker Desktop through one clean
+  `docker compose up -d --build`; then `POST /api/v1/orders` through to
+  `GET /api/v1/sagas/{orderId}` showing `state: COMPLETED` closes Phase 6 for
+  good.
 
 ## Next Steps
-1. Once Docker survives a full build: `docker compose up -d --build`, confirm
-   all 5 services healthy, smoke-test `POST /api/v1/orders` through to
-   `GET /api/v1/inventory` per the README quickstart. This is the only thing
-   left to mark Phase 3 complete — Phases 4 and 5 are already done.
-2. Begin Phase 6 — Saga Orchestrator (`PLAN.md`) — the centrepiece phase.
-   Its own dependencies (Phases 3–5's code, not their live-compose checks)
-   are all satisfied, so this can start without waiting on item 1.
+1. Once Docker survives a full build: `docker compose up -d --build`, place
+   an order via `POST /api/v1/orders`, and confirm it reaches
+   `orders.status = CONFIRMED` / `GET /sagas/{orderId}` → `COMPLETED`. This is
+   the only thing left to mark Phase 6 complete.
+2. Begin Phase 7 — Dispatch/Notification Service and full-pipeline E2E
+   (`PLAN.md`). Its dependency (Phase 6's code, not the live-compose check) is
+   satisfied, so this can start without waiting on item 1.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -203,6 +235,64 @@ Full reasoning for each is in `ARCHITECTURE.md` §3.
   modes, `armFailureMode` — and the gap is recorded here rather than silently
   dropped. Worth revisiting if Phase 12's load test ever wants a non-zero
   gateway latency to make its bottleneck analysis more realistic.
+- **Phase 6 — `COMPENSATING_PAYMENT` is reached via a new, real
+  `POST /sagas/{id}/abort` (ADMIN) operation, never via a blind
+  `CHARGING_PAYMENT`-timeout refund.** `RefundPaymentPayload` (§6.3) requires a
+  known `paymentId` — payment-service's own `PaymentChargeService.handleRefundPayment`
+  already fails loudly on an unknown one (PLAN.md Phase 5). If a `ChargePayment`
+  reply never arrives, the orchestrator has no `paymentId` to refund by
+  construction, so a `CHARGING_PAYMENT` timeout can only ever compensate
+  inventory (`COMPENSATING_INVENTORY`) — matching §7.2's diagram literally
+  (`CHARGING_PAYMENT --> COMPENSATING_INVENTORY : PaymentFailed / timeout`,
+  no payment edge). `COMPENSATING_PAYMENT` therefore has no natural forward
+  trigger once payment has genuinely succeeded — completing forward is always
+  the correct outcome once the pivot's preconditions are known true — so the
+  one legitimate way to reach it is an operator deciding, from outside the
+  saga's own timeout logic, to cancel anyway. `abortFrom`
+  (`SagaOrchestrationService`) derives the compensation set generically from
+  the step log (§8.2's explicit requirement) for both this and every
+  timeout-driven path, so it is one mechanism, not a special case bolted on
+  for the abort endpoint.
+- **Phase 6 — the pivot (`PaymentCharged` processed → `OrderConfirmed`
+  published, `CONFIRMING` → `COMPLETED`) is deliberately split into two
+  transactions**, not one. Processing the `PaymentCharged` reply commits
+  `CHARGE_PAYMENT SUCCEEDED` and the state transition to `CONFIRMING`; a
+  second, separate call (`tryConfirm`) performs the actual pivot. This is what
+  makes `CONFIRMING` a real, crash-recoverable, *and operator-abortable*
+  state rather than an instant no-op fused into one method — a crash between
+  the two transactions leaves a saga in `CONFIRMING` with a deadline for
+  `SagaTimeoutSweeper` to retry (always forward, never backward, once payment
+  is known captured), and it is also the state `abortSaga` can act on for the
+  decision immediately above. In normal operation the two calls happen
+  milliseconds apart (the listener calls both in sequence after a
+  `PaymentCharged` reply), so this costs nothing observable in the happy path.
+- **Phase 6 — the "saga definition DSL" PLAN.md asks for is a small data-only
+  step-name/compensation mapping (`SagaSteps`), not a generic rule
+  interpreter.** PLAN.md's own risk register explicitly allows cutting exactly
+  this ("one definition, no dynamic branching, no nested sagas" / "hardcode
+  the step list") — `SagaOrchestrationService`'s methods are concrete,
+  explicit code per transition, matching the style already established by
+  `InventoryReservationService` and `PaymentChargeService`, with `SagaSteps`
+  supplying just the step-name constants and the one piece of real generality
+  the architecture actually requires: deriving a compensation from a forward
+  step name, used by both the timeout paths and `abortFrom`.
+- **Phase 6 — `OrderPlaced` never carried `paymentMethodToken`, closed as
+  BUG-0011.** `ChargePaymentPayload` (§6.3) requires one; `POST /orders`
+  always collected and validated one (§10.1); nothing in between propagated
+  it. Added to `Order` (new nullable column), `OrderPlacedPayload`, and its
+  JSON Schema, threaded through `OrderService.createOrder` — a real gap in the
+  frozen spec closed rather than worked around, per `CLAUDE.md` §0.
+- **Phase 6 — "orchestrator crash recovery" is tested as idempotent-redelivery
+  (same `eventId` reprocessed), not a literal JVM halt-and-restart.** A
+  message whose offset was never committed is redelivered with the exact same
+  `eventId` — indistinguishable, from the inbox's point of view, from "the
+  process crashed and Kafka redelivered it," which is the property that
+  actually matters (§9). A real `Runtime.halt()`-mid-transaction race against
+  a running process is what Phase 11's chaos matrix exists to test with the
+  already-wired `saga.after-reply-before-state-write` /
+  `saga.after-state-write-before-command` chaos points — building a
+  process-kill harness a second time, early, for this phase's own unit-level
+  tests would duplicate that work for no additional confidence now.
 - **Phase 4/5 — `./mvnw verify` ran live and green for the full reactor this
   session** once Docker recovered mid-session (BUG-0008), including the
   50-thread/20-repetition inventory concurrency test and the 5-concurrent-
