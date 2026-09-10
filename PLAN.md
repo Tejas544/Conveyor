@@ -385,18 +385,29 @@ real time in another.
 **Dependencies.** Phase 7. (Phase 9 may be interleaved.)
 
 **Exit criteria.**
-- [ ] **Test (RTL):** kanban renders and moves a card on an SSE event.
-- [ ] **Test (RTL):** the SSE hook reconnects after a dropped stream and resumes
+- [x] **Test (RTL):** kanban renders and moves a card on an SSE event.
+      (`KanbanBoard.test.tsx`.)
+- [x] **Test (RTL):** the SSE hook reconnects after a dropped stream and resumes
       from `Last-Event-ID` without duplicating or losing events.
-- [ ] **Test (RTL):** admin controls are absent for an `OPS` token and present
-      for `ADMIN`.
-- [ ] **Test (Playwright):** login → place order → the card reaches `CONFIRMED`
-      live, no page reload.
-- [ ] **Test (Playwright):** a forced payment failure shows the compensation
+      (`useSagaStream.test.ts`.)
+- [x] **Test (RTL):** admin controls are absent for an `OPS` token and present
+      for `ADMIN`. (`InventoryPage.test.tsx`.)
+- [x] **Test (Playwright):** login → place order → the card reaches `CONFIRMED`
+      live, no page reload. (`e2e/happy-path.spec.ts`, run live against the
+      real backend stack — not mocked.)
+- [x] **Test (Playwright):** a forced payment failure shows the compensation
       steps on the timeline and the order ends `CANCELLED`.
-- [ ] `tsc --noEmit` clean under `strict` + `noUncheckedIndexedAccess`.
-- [ ] Keyboard-navigable; axe reports no critical violations.
-- [ ] Manual check at 1440p and 1024px — this is a demo artifact.
+      (`e2e/forced-failure.spec.ts`; required making payment-service's `chaos`
+      profile the local-dev default — see BUGS.md BUG-0016.)
+- [x] `tsc --noEmit` clean under `strict` + `noUncheckedIndexedAccess`. (`npm
+      run build` runs `tsc -b` first; verified clean.)
+- [x] Keyboard-navigable; axe reports no critical violations.
+      (`e2e/accessibility.spec.ts` — zero violations at any severity, not just
+      critical, across the login and dashboard pages.)
+- [x] Manual check at 1440p and 1024px — this is a demo artifact. Verified via
+      the browser tool at both sizes: the 6-column kanban board scrolls
+      horizontally past ~1536px of column width (6 × min 256px), which is the
+      expected, legible behavior at both checked sizes, not a defect.
 
 ---
 

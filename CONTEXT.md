@@ -1,12 +1,15 @@
-# Context — Last updated: 2026-09-10 (Phase 7 closed; Phase 8 starting)
+# Context — Last updated: 2026-09-10 (Phase 8 complete)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 8 — Live ops dashboard (starting).** Phase 7 and Phase 6's last open
-exit criterion are both closed this session — see Completed Phases.
+**Phase 9 — Observability (not started).** Phase 8 closed this session — see
+Completed Phases. Per `PLAN.md`, Phase 9 may be interleaved with Phase 8, but
+no Phase 9 work (OpenTelemetry, Grafana dashboards, the metrics-assertion
+tests) has been done yet; this is a checkpoint, not a silent continuation —
+per `CLAUDE.md` §2.4 the human should sign off before Phase 9 begins.
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -162,10 +165,41 @@ exit criterion are both closed this session — see Completed Phases.
   The Definition-of-Done line "full happy-path order flow works end to end"
   is now true, minus the dashboard — verified twice: once via the `e2e`
   suite, once via a manual order against live `docker compose up`.
+- Phase 8 — Live ops dashboard ✅ (2026-09-10). Two real backend gaps closed
+  first, since the dashboard needed them: `POST /auth/login`/`/refresh`/
+  `/logout` (order-service's `JwtIssuer`/`AuthService`/`AuthController`, ADR-5
+  — token issuance was deferred at Phase 4, see that Key Decisions Log entry)
+  and `GET /stream/orders` (`SseBroadcaster`/`SseBroadcastListener`/
+  `StreamController`, ADR-10's per-replica broadcast consumer group, with
+  `Last-Event-ID` resume via a bounded in-memory replay buffer). 10 new
+  backend integration tests green; full 8-module reactor green (156/156)
+  after.
+  <br>Frontend: Vite + React 19 + strict TS (`noUncheckedIndexedAccess`) +
+  Tailwind + vendored shadcn/ui + TanStack Query + react-router-dom, in
+  `frontend/`. TS types generated from each service's live OpenAPI spec
+  (`scripts/generate-types.sh`). Kanban board (six columns, SSE-live,
+  framer-motion transitions), `useSagaStream` (fetch + `ReadableStream`,
+  ADR-5's EventSource workaround, exponential-backoff reconnect), per-order
+  timeline rendering saga-orchestrator's real `saga_steps` log, admin
+  inventory panel with an ADMIN-gated adjust dialog, login + role-gated
+  routes, order-placement form with the "make this one fail" control.
+  <br>All exit criteria met and verified live, not just written: 4 RTL tests,
+  5 Playwright tests (2 journeys + 3 accessibility, `workers: 1` since they
+  share one live backend's mutable state) run against the real stack — zero
+  mocks in the Playwright suite. `tsc -b` clean; zero axe violations at any
+  severity (not just critical). Manually checked at 1440p/1024px via the
+  browser tool. Two real bugs found and fixed against the live stack (not
+  caught by types or unit tests alone) — BUG-0015 (springdoc's OpenAPI
+  schema shapes Spring's `Pageable` as nested, but the real query-param
+  binding is flat — 400'd every list screen) and BUG-0016 (the chaos-profile
+  test endpoint's actual path is `/test/failure-mode`, not
+  `/api/v1/test/failure-mode`, and payment-service didn't run that profile
+  by default — now `docker-compose.yml`'s local-dev default). See Key
+  Decisions Log for the timeline's data-source choice and the SSE payload
+  simplification versus ARCHITECTURE.md §10.1's illustrative shape.
 
 ## In Progress
-- **Nothing mid-flight.** Phase 8 (Live ops dashboard) is starting fresh this
-  session.
+- **Nothing mid-flight.** Phase 8 closed this session; Phase 9 not started.
 
 ## Blockers
 - **None currently open.** BUG-0007 (disk space) is resolved via the data-root
@@ -180,15 +214,19 @@ exit criterion are both closed this session — see Completed Phases.
   not.
 
 ## Next Steps
-1. Phase 8 — Live ops dashboard (PLAN.md's Stage C): Vite + React 19 + strict
-   TS + Tailwind + shadcn/ui, kanban board by order state with SSE live
-   updates, per-order saga-step timeline, `useSagaStream` SSE hook with
-   `Last-Event-ID` resume, admin inventory panel, login screen (token
-   issuance — `POST /auth/login` — is now in scope; see Phase 4's Key
-   Decisions Log on why it was deferred until here), order-placement form
-   with a "make this one fail" control. Full exit criteria in `PLAN.md`
-   Phase 8.
-2. Phase 9 (Observability) may be interleaved with Phase 8 per `PLAN.md`.
+1. **Checkpoint with the human before Phase 9** (`CLAUDE.md` §2.4) —
+   Observability: OpenTelemetry tracing across all five services + Kafka
+   header propagation, Micrometer/Prometheus metrics from §11, a Grafana
+   `observability` compose profile, the one-trace-per-order screenshot
+   artifact.
+2. Not done as part of Phase 8, worth naming rather than leaving implicit:
+   `saga.intervention` (an SSE event name ARCHITECTURE.md §10.1 lists) has no
+   real source — `NEEDS_INTERVENTION` is reached via
+   `SagaTimeoutSweeper`'s escalation, which publishes no Kafka event today.
+   The dashboard has no live push for it yet; `GET /sagas?state=&stuck=true`
+   still lets an operator find one by polling. Worth a real fix (an event, or
+   a poll-based badge in `AppShell`) whenever Phase 9's metrics work touches
+   this path anyway.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -201,6 +239,48 @@ exit criterion are both closed this session — see Completed Phases.
   of this session (BUG-0008) — status, not a version change.
 
 ## Key Decisions Log
+
+- **Phase 8 — the per-order timeline reads saga-orchestrator's own
+  `GET /sagas/{orderId}` directly, rather than reconstructing step/direction
+  semantics from the generic SSE `order.step` events.** `saga_steps` (`seq`,
+  `step`, `direction`, `status`, `occurredAt`) is the authoritative source;
+  the SSE stream is only used as a "something changed, refetch" signal for
+  this view. The kanban board, by contrast, only needs a coarse *status*
+  (`PLACED`/`CONFIRMED`/etc.), which order-service's own reply-derived
+  mapping already provides — so it consumes the SSE payload directly rather
+  than round-tripping through saga-orchestrator per card.
+- **Phase 8 — the SSE payload's shape is simpler than ARCHITECTURE.md
+  §10.1's illustrative `order.step` example** (`step`/`direction`/`status`
+  fields). Those are saga-orchestrator-internal concepts order-service has
+  no authoritative source for from reply events alone (see
+  `SseBroadcastListener`'s Javadoc); every SSE event instead carries the
+  envelope's own `eventType` plus its raw `payload`, and the frontend maps
+  `eventType` to a step label (`lib/orderStatus.ts#stepLabel`). Recorded here
+  rather than silently diverging from the doc.
+- **Phase 8 — the SSE broadcast listener is deliberately *not*
+  inbox-deduplicated**, unlike every other consumer in this codebase (§9).
+  It only ever pushes to a live browser tab; an occasional duplicate frame
+  during redelivery is a harmless double-render, not worth a database write
+  per message.
+- **Phase 8 — `Last-Event-ID` resume is backed by a bounded in-memory ring
+  buffer per replica** (`SseBroadcaster`, 500 events), not a durable log.
+  Consistent with ADR-10's `auto.offset.reset=latest`: a replica has no
+  earlier Kafka history to serve anyway, so an in-memory buffer covering the
+  reconnect gap is exactly as durable as the design calls for.
+- **Phase 8 — the refresh token is a second, stateless RS256 JWT**
+  (`"tokenType": "refresh"` claim, no roles), not a server-side token table.
+  `AuthService.refresh` re-derives the user's *current* roles from the
+  database on every refresh rather than trusting anything baked into the
+  refresh token itself — the only thing trusted from it is the subject.
+- **Phase 8 — `docker-compose.yml` now defaults payment-service to the
+  `chaos` Spring profile locally** (`SPRING_PROFILES_ACTIVE:
+  ${PAYMENT_SERVICE_PROFILES:-chaos}`), reversing Phase 5's original posture
+  of `chaos` being opt-in. PLAN.md's own Phase 8 deliverable names a
+  dashboard control that requires this profile; leaving it off by default
+  would ship a UI control that silently does nothing (BUG-0016).
+  `ChaosProfileStartupGuard` still refuses to start with `prod` active
+  alongside it, and the mock gateway's base failure rates stay `0`
+  regardless of profile, so this changes nothing about normal order flow.
 
 Full reasoning for each is in `ARCHITECTURE.md` §3.
 
