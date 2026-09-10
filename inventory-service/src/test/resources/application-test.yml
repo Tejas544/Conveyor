@@ -1,0 +1,14 @@
+conveyor:
+  outbox:
+    poller:
+      # Deterministic tests: nothing publishes on a background schedule racing the assertions.
+      # Tests that need a row published call outboxPoller.publishOneBatch() directly.
+      enabled: false
+
+spring:
+  datasource:
+    hikari:
+      # PLAN.md Phase 4's headline test drives 50 concurrent reservations at once; the default
+      # pool (10) would just serialize most of them on a connection wait instead of exercising
+      # ADR-9's guarded UPDATE under real concurrency.
+      maximum-pool-size: 60
