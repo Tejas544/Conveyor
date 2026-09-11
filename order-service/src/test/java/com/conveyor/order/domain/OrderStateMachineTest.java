@@ -21,10 +21,12 @@ class OrderStateMachineTest {
 
   private static final Map<OrderStatus, Set<OrderStatus>> LEGAL =
       Map.of(
-          OrderStatus.PLACED, Set.of(OrderStatus.INVENTORY_RESERVED, OrderStatus.COMPENSATING),
+          OrderStatus.PLACED,
+              Set.of(OrderStatus.INVENTORY_RESERVED, OrderStatus.COMPENSATING, OrderStatus.CANCELLED),
           OrderStatus.INVENTORY_RESERVED,
-              Set.of(OrderStatus.PAYMENT_CHARGED, OrderStatus.COMPENSATING),
-          OrderStatus.PAYMENT_CHARGED, Set.of(OrderStatus.CONFIRMED, OrderStatus.COMPENSATING),
+              Set.of(OrderStatus.PAYMENT_CHARGED, OrderStatus.COMPENSATING, OrderStatus.CANCELLED),
+          OrderStatus.PAYMENT_CHARGED,
+              Set.of(OrderStatus.CONFIRMED, OrderStatus.COMPENSATING, OrderStatus.CANCELLED),
           OrderStatus.CONFIRMED, Set.of(),
           OrderStatus.COMPENSATING, Set.of(OrderStatus.CANCELLED),
           OrderStatus.CANCELLED, Set.of());

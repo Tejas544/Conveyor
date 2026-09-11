@@ -88,4 +88,68 @@ class SagaEventProjectionListenerTest extends AbstractIntegrationTest {
                 assertThat(orderRepository.findById(orderId).orElseThrow().getStatus())
                     .isEqualTo(OrderStatus.INVENTORY_RESERVED));
   }
+
+  /**
+   * BUG-0026: {@code SagaTimeoutSweeper}'s deadline-driven aborts publish {@code OrderCancelled}
+   * directly, with no intermediate {@code InventoryReservationFailed}/{@code PaymentFailed} reply
+   * to drive this listener through {@code COMPENSATING} first — unlike a reply-triggered
+   * compensation. Before the fix, {@code INVENTORY_RESERVED -> CANCELLED} was an illegal
+   * transition the listener silently swallowed (logged, not thrown), leaving the order stuck
+   * reporting an in-progress status forever even though the saga had already correctly reached
+   * {@code ABORTED}. Found live via Phase 11's chaos matrix.
+   */
+  @Test
+  void orderCancelledAdvancesOrderStatusDirectlyFromInventoryReservedWithNoInterveningCompensatingEvent()
+      throws Exception {
+    UUID orderId = UUID.randomUUID();
+    transactionTemplate.executeWithoutResult(
+        status -> {
+          Order order =
+              new Order(
+                  orderId,
+                  UUID.randomUUID(),
+                  OrderStatus.PLACED,
+                  new BigDecimal("9.99"),
+                  "USD",
+                  Map.of(
+                      "line1",
+                      "1 Test St",
+                      "city",
+                      "Testville",
+                      "postalCode",
+                      "00000",
+                      "country",
+                      "IN"),
+                  null);
+          order.addItem(new OrderItem(UUID.randomUUID(), "SKU-PROJ-2", 1, new BigDecimal("9.99")));
+          order.transitionTo(OrderStatus.INVENTORY_RESERVED);
+          orderRepository.save(order);
+        });
+
+    ConveyorEnvelope<Map<String, Object>> envelope =
+        ConveyorEnvelope.of(
+            "OrderCancelled",
+            1,
+            "saga-orchestrator",
+            UUID.randomUUID(),
+            orderId,
+            null,
+            Map.of("reason", "RESERVE_INVENTORY_TIMEOUT", "compensatedSteps", java.util.List.of()));
+    String json = objectMapper.writeValueAsString(envelope);
+
+    Properties producerProps = new Properties();
+    producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, REDPANDA.getBootstrapServers());
+    producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+    producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+    try (KafkaProducer<String, String> producer = new KafkaProducer<>(producerProps)) {
+      producer.send(new ProducerRecord<>(KafkaTopics.ORDER_EVENTS, orderId.toString(), json)).get();
+    }
+
+    await()
+        .atMost(Duration.ofSeconds(15))
+        .untilAsserted(
+            () ->
+                assertThat(orderRepository.findById(orderId).orElseThrow().getStatus())
+                    .isEqualTo(OrderStatus.CANCELLED));
+  }
 }
