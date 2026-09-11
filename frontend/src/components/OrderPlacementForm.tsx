@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { orderClient, inventoryClient } from '@/api/client'
+import { API_BASE_URLS } from '@/api/config'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -41,7 +42,7 @@ export function OrderPlacementForm() {
       // ARCHITECTURE.md §10.4: chaos-profile-only test surface. Best-effort -- if the stack isn't
       // running with SPRING_PROFILES_ACTIVE=chaos on payment-service this simply 404s, and the
       // order below still goes through normally rather than silently failing to place at all.
-      await fetch('/test/failure-mode', {
+      await fetch(`${API_BASE_URLS.payment}/test/failure-mode`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: 'DECLINE', probability: 1.0 }),

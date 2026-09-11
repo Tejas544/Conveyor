@@ -5,6 +5,11 @@ import path from 'node:path'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Phase 14: GitHub Pages serves this project's build from /Conveyor/, not the origin root --
+  // `VITE_BASE_PATH` (set only by the Pages deploy workflow) becomes `import.meta.env.BASE_URL`,
+  // which main.tsx passes to BrowserRouter as `basename`. Unset everywhere else (docker-compose,
+  // `npm run dev`, kind), so every other deployment shape's root-relative routing is unchanged.
+  base: process.env.VITE_BASE_PATH || '/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

@@ -24,6 +24,14 @@ x-chaos-env: &chaos-env
   CONVEYOR_CHAOS_CRASH_PROBABILITY: ${CONVEYOR_CHAOS_CRASH_PROBABILITY:-1.0}
   CONVEYOR_CHAOS_DELAY_AT: ${CONVEYOR_CHAOS_DELAY_AT:-}
 
+# Phase 14: cross-origin allowance for the statically-hosted dashboard (docs/DEPLOYMENT.md --
+# GitHub Pages) pointed at this compose stack's published ports. Defaulted to the project's actual
+# Pages origin, not empty, for the same "leaves a demoable stack with no extra flags" reasoning as
+# infra/helm/conveyor/values.yaml's identical default -- see conveyor-common's
+# CorsProperties/SecurityAutoConfiguration. Override via .env to lock it back down.
+x-cors-env: &cors-env
+  CONVEYOR_SECURITY_CORS_ALLOWED_ORIGINS: ${CONVEYOR_SECURITY_CORS_ALLOWED_ORIGINS:-https://tejas544.github.io}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -116,7 +124,7 @@ services:
       # Local dev serves the stack over plain http://localhost; a Secure cookie would never
       # reach the browser there. Real deployments (behind HTTPS) leave this unset (default true).
       CONVEYOR_SECURITY_JWT_COOKIE_SECURE: "false"
-      <<: [*chaos-env, *tracing-env]
+      <<: [*chaos-env, *tracing-env, *cors-env]
     ports:
       - "8081:8081"
     depends_on:
@@ -135,7 +143,7 @@ services:
       DB_PASSWORD: ${INVENTORY_DB_PASSWORD:-inventory_service_local_dev_only}
       MONGO_URI: mongodb://${MONGO_INITDB_ROOT_USERNAME:-conveyor}:${MONGO_INITDB_ROOT_PASSWORD:-mongo_local_dev_only}@mongo:27017/inventory_service?authSource=admin
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
-      <<: [*chaos-env, *tracing-env]
+      <<: [*chaos-env, *tracing-env, *cors-env]
     ports:
       - "8082:8082"
     depends_on:
@@ -165,7 +173,7 @@ services:
       # start if `prod` is ever active alongside it, so this is safe to default on for local/demo
       # use. Override with an empty value to run without it.
       SPRING_PROFILES_ACTIVE: ${PAYMENT_SERVICE_PROFILES:-chaos}
-      <<: [*chaos-env, *tracing-env]
+      <<: [*chaos-env, *tracing-env, *cors-env]
     ports:
       - "8083:8083"
     depends_on:
@@ -183,7 +191,7 @@ services:
       DB_USERNAME: ${SAGA_DB_USER:-saga_orchestrator}
       DB_PASSWORD: ${SAGA_DB_PASSWORD:-saga_orchestrator_local_dev_only}
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
-      <<: [*chaos-env, *tracing-env]
+      <<: [*chaos-env, *tracing-env, *cors-env]
     ports:
       - "8084:8084"
     depends_on:
@@ -202,7 +210,7 @@ services:
       DB_PASSWORD: ${DISPATCH_DB_PASSWORD:-dispatch_service_local_dev_only}
       MONGO_URI: mongodb://${MONGO_INITDB_ROOT_USERNAME:-conveyor}:${MONGO_INITDB_ROOT_PASSWORD:-mongo_local_dev_only}@mongo:27017/dispatch_service?authSource=admin
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
-      <<: [*chaos-env, *tracing-env]
+      <<: [*chaos-env, *tracing-env, *cors-env]
     ports:
       - "8085:8085"
     depends_on:

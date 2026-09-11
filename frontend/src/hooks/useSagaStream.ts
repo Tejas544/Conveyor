@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getAccessToken } from '@/api/tokenStore'
+import { API_BASE_URLS } from '@/api/config'
 
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'closed'
 
@@ -32,7 +33,9 @@ export function useSagaStream(onEvent: (frame: SseFrame) => void, orderId?: stri
 
     async function connectOnce() {
       setConnectionState((prev) => (prev === 'connecting' ? prev : 'reconnecting'))
-      const url = orderId ? `/api/v1/stream/orders?orderId=${encodeURIComponent(orderId)}` : '/api/v1/stream/orders'
+      const url = orderId
+        ? `${API_BASE_URLS.order}/api/v1/stream/orders?orderId=${encodeURIComponent(orderId)}`
+        : `${API_BASE_URLS.order}/api/v1/stream/orders`
       const headers: Record<string, string> = {}
       const token = getAccessToken()
       if (token) headers.Authorization = `Bearer ${token}`

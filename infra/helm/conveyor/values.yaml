@@ -11,6 +11,21 @@ image:
   tag: local
   pullPolicy: IfNotPresent
 
+# Phase 14: only needed when `image.repository` points at a private registry the cluster's nodes
+# can't pull from anonymously (GHCR, from CI's `deploy-to-kind` job) -- empty list here is a no-op,
+# exactly what every image built-and-`kind load`ed locally (scripts/kind-up.sh) already needs, since
+# those images never leave the node's local image cache.
+imagePullSecrets: []
+
+# Phase 14: cross-origin allowance for the statically-hosted dashboard (docs/DEPLOYMENT.md,
+# ARCHITECTURE.md §15.2 -- GitHub Pages) pointed at this cluster's NodePorts -- see conveyor-common's
+# CorsProperties/SecurityAutoConfiguration. Defaulted to the project's actual Pages origin (not
+# empty) so `make kind-up` alone leaves a stack the permanent Pages URL can reach immediately,
+# matching this chart's existing "helm install alone leaves a demoable stack" posture (seed.enabled
+# above). Override with --set corsAllowedOrigins="" to lock it back down. Comma-separated (Spring's
+# relaxed binding for a List<String> env var).
+corsAllowedOrigins: "https://tejas544.github.io"
+
 kafka:
   # Strimzi's generated bootstrap Service name (infra/k8s/kafka/kafka-cluster.yaml: Kafka
   # metadata.name=conveyor-kafka -> "<name>-kafka-bootstrap"). Applied before this chart, not

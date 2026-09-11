@@ -32,6 +32,10 @@ spec:
             {{- include "conveyor.labels" . | nindent 12 }}
         spec:
           restartPolicy: Never
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
             fsGroup: 1000
           containers:

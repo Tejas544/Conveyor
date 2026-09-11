@@ -5,6 +5,7 @@ import type { paths as PaymentPaths } from './generated/payment'
 import type { paths as SagaPaths } from './generated/saga'
 import type { paths as DispatchPaths } from './generated/dispatch'
 import { getAccessToken, setSession } from './tokenStore'
+import { API_BASE_URLS } from './config'
 
 let refreshInFlight: Promise<string | null> | null = null
 
@@ -13,7 +14,10 @@ async function refreshAccessToken(): Promise<string | null> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
       try {
-        const response = await fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' })
+        const response = await fetch(`${API_BASE_URLS.order}/api/v1/auth/refresh`, {
+          method: 'POST',
+          credentials: 'include',
+        })
         if (!response.ok) {
           setSession(null)
           return null
@@ -91,10 +95,14 @@ function querySerializer(queryParams: Record<string, unknown>): string {
   return search.toString()
 }
 
-export const orderClient = withAuth(createClient<OrderPaths>({ baseUrl: '', querySerializer }))
-export const inventoryClient = withAuth(createClient<InventoryPaths>({ baseUrl: '', querySerializer }))
-export const paymentClient = withAuth(createClient<PaymentPaths>({ baseUrl: '' }))
-export const sagaClient = withAuth(createClient<SagaPaths>({ baseUrl: '' }))
-export const dispatchClient = withAuth(createClient<DispatchPaths>({ baseUrl: '' }))
+export const orderClient = withAuth(
+  createClient<OrderPaths>({ baseUrl: API_BASE_URLS.order, querySerializer }),
+)
+export const inventoryClient = withAuth(
+  createClient<InventoryPaths>({ baseUrl: API_BASE_URLS.inventory, querySerializer }),
+)
+export const paymentClient = withAuth(createClient<PaymentPaths>({ baseUrl: API_BASE_URLS.payment }))
+export const sagaClient = withAuth(createClient<SagaPaths>({ baseUrl: API_BASE_URLS.saga }))
+export const dispatchClient = withAuth(createClient<DispatchPaths>({ baseUrl: API_BASE_URLS.dispatch }))
 
 export { refreshAccessToken }

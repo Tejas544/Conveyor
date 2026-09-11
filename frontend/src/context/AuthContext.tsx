@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { getAccessToken, getRoles, setSession, subscribe } from '@/api/tokenStore'
 import { refreshAccessToken } from '@/api/client'
+import { API_BASE_URLS } from '@/api/config'
 
 interface AuthState {
   accessToken: string | null
@@ -49,7 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [status])
 
   async function login(username: string, password: string) {
-    const response = await fetch('/api/v1/auth/login', {
+    const response = await fetch(`${API_BASE_URLS.order}/api/v1/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -64,7 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function logout() {
-    await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' })
+    await fetch(`${API_BASE_URLS.order}/api/v1/auth/logout`, { method: 'POST', credentials: 'include' })
     setSession(null)
     setStatus('anonymous')
   }

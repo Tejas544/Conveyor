@@ -30,6 +30,10 @@ spec:
       restartPolicy: Never
       securityContext:
         fsGroup: 1000
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: seed
           image: "{{ .Values.image.repository }}/order-service:{{ .Values.image.tag }}"
@@ -85,6 +89,10 @@ spec:
       restartPolicy: Never
       securityContext:
         fsGroup: 1000
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: seed
           image: "{{ .Values.image.repository }}/inventory-service:{{ .Values.image.tag }}"

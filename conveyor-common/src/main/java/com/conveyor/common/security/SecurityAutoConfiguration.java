@@ -3,7 +3,9 @@ package com.conveyor.common.security;
 import java.security.KeyFactory;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.X509EncodedKeySpec;
+import java.time.Duration;
 import java.util.Base64;
+import java.util.List;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -16,6 +18,9 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 /**
  * ADR-5: every service is a Spring Security resource server validating the same self-issued RS256
@@ -33,7 +38,7 @@ import org.springframework.security.web.SecurityFilterChain;
  * gated changes behavior.
  */
 @AutoConfiguration
-@EnableConfigurationProperties(JwtSecurityProperties.class)
+@EnableConfigurationProperties({JwtSecurityProperties.class, CorsProperties.class})
 @ConditionalOnClass(SecurityFilterChain.class)
 @EnableWebSecurity
 @EnableMethodSecurity
@@ -59,10 +64,41 @@ public class SecurityAutoConfiguration {
     return converter;
   }
 
+  /**
+   * Phase 14: empty {@link CorsProperties#allowedOrigins()} (every deployment shape before this
+   * phase, and every one after it that doesn't set {@code conveyor.security.cors.allowed-origins})
+   * registers a configuration with no origins in it, so the browser's own same-origin policy keeps
+   * doing exactly what it already did — this bean only starts mattering once a statically-hosted
+   * frontend origin is explicitly named.
+   */
+  @Bean
+  public CorsConfigurationSource corsConfigurationSource(CorsProperties properties) {
+    CorsConfiguration configuration = new CorsConfiguration();
+    configuration.setAllowedOrigins(properties.allowedOrigins());
+    configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+    configuration.setAllowedHeaders(
+        List.of(
+            "Authorization",
+            "Content-Type",
+            "Idempotency-Key",
+            "Last-Event-ID",
+            "X-Retried-After-Refresh"));
+    configuration.setAllowCredentials(true);
+    configuration.setMaxAge(Duration.ofHours(1));
+
+    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+    source.registerCorsConfiguration("/**", configuration);
+    return source;
+  }
+
   @Bean
   public SecurityFilterChain securityFilterChain(
-      HttpSecurity http, JwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
+      HttpSecurity http,
+      JwtAuthenticationConverter jwtAuthenticationConverter,
+      CorsConfigurationSource corsConfigurationSource)
+      throws Exception {
     http.csrf(csrf -> csrf.disable())
+        .cors(cors -> cors.configurationSource(corsConfigurationSource))
         .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
         .oauth2ResourceServer(
             oauth2 ->
