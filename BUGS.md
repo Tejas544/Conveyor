@@ -20,6 +20,50 @@ Format for each entry:
 
 ---
 
+## [BUG-0041] Every other shell script in the repo had the same missing-executable-bit defect as BUG-0037
+- **Date:** 2026-09-11
+- **Phase:** Phase 14 — CI/CD and deployment (found auditing the repo after BUG-0037, while adding a new `infra/teardown.sh`)
+- **Severity:** High
+- **Symptom:** `git ls-files -s '*.sh'` showed `scripts/kind-up.sh`, `scripts/kind-down.sh`, `scripts/soak-check.sh`, and `frontend/scripts/generate-types.sh` all committed as mode `100644` — the exact same defect as BUG-0037, just never triggered because nothing in CI has ever invoked any of them directly (`make kind-up`/`make kind-down` are always run locally on this Windows dev machine, where the git-tracked mode is irrelevant) and `deploy-to-kind`'s own new CI job (this phase) inlines its steps rather than calling `kind-up.sh`. A fresh Linux checkout running any of these four via `./script.sh` would hit `Permission denied`, identically to BUG-0037.
+- **Root cause:** Same as BUG-0037 — these scripts were authored/committed from this Windows machine, where the executable bit is meaningless locally, so the gap was never observable here.
+- **Fix:** `git update-index --chmod=+x` on all four, plus `infra/postgres/init-service-databases.sh` / `infra/helm/conveyor/files/init-service-databases.sh` (not strictly required — the official Postgres entrypoint `source`s `docker-entrypoint-initdb.d/*.sh` regardless of the executable bit — but corrected anyway since they're the same class of file and the inconsistency was otherwise unexplained) and the new `infra/teardown.sh` added this phase.
+- **Status:** Fixed
+
+---
+
+## [BUG-0040] `invariant-check` CI job hit `order-service` before it finished starting — a race BUG-0037 had always hidden
+- **Date:** 2026-09-11
+- **Phase:** Phase 14 — CI/CD and deployment (found live, first time this job ever ran to completion)
+- **Severity:** Medium
+- **Symptom:** The `invariant-check` job's seed step fails with `ResourceAccessException: I/O error on GET request for "http://order-service:8081/api/v1/orders"` / `ConnectException: ClosedChannelException`, `make: *** [Makefile:50: invariant-check] Error 1`.
+- **Root cause:** `docker compose up -d --build` (no `--wait`) returns as soon as containers are *started*, not once the app services' own Dockerfile `HEALTHCHECK`s report `healthy` — the very next step ran `docker compose run --rm ... order-service` (the seed job) and, moments later, `make invariant-check`, both of which can race Spring Boot's own startup time on a cold, freshly-built container. Invisible until now because BUG-0037 blocked every prior CI run before reaching this job at all.
+- **Fix:** Added `--wait` to the `docker compose up -d --build` invocation in `.github/workflows/build.yml`'s `invariant-check` job — Compose blocks until every service with a healthcheck reports healthy before the step returns.
+- **Status:** Fixed
+
+---
+
+## [BUG-0039] `e2e` module's Spotless check had never actually run in CI, and failed the first time it did
+- **Date:** 2026-09-11
+- **Phase:** Phase 14 — CI/CD and deployment (found live, first time the `e2e` CI job ever ran to completion)
+- **Severity:** Low
+- **Symptom:** The `e2e` job's `mvn verify -DskipE2E=false` — after all 7 tests themselves passed — fails at the very end on `spotless-maven-plugin:check`, citing formatting violations in `TraceContextPropagationE2ETest.java`, `RestClient.java`, and `KindE2ESmokeTest.java` (comment line-wrap width, mostly).
+- **Root cause:** The `e2e` module is deliberately excluded from the root reactor's default `./mvnw verify` (CONTEXT.md, Phase 7 — it needs a live compose stack no other module's suite does), so its own Spotless check has only ever run inside `build.yml`'s `e2e` CI job specifically — a job that, per BUG-0037, had never once completed since CI started running. These three files' formatting had silently drifted out of Spotless's expected style the entire time with nothing to catch it.
+- **Fix:** `./mvnw -f e2e/pom.xml spotless:apply`, committed as-is; `spotless:check` now passes clean.
+- **Status:** Fixed
+
+---
+
+## [BUG-0038] `aquasecurity/trivy-action` pinned without its `v` tag prefix — the action reference never resolved
+- **Date:** 2026-09-11
+- **Phase:** Phase 14 — CI/CD and deployment (found immediately after BUG-0037's fix let the pipeline run far enough to reach this job for the first time)
+- **Severity:** High
+- **Symptom:** The `security-scan` job's "Set up job" step fails outright: `Unable to resolve action 'aquasecurity/trivy-action@0.24.0', unable to find version '0.24.0'`. Never previously visible because BUG-0037 blocked every prior run before any job finished.
+- **Root cause:** `.github/workflows/build.yml` referenced `aquasecurity/trivy-action@0.24.0`; the upstream repo tags releases `v0.24.0` (with the `v`), so the literal string `0.24.0` matches no ref.
+- **Fix:** Repinned to `aquasecurity/trivy-action@0.36.0` (the current release, `v` included in the actual tag as GitHub Actions' `@` syntax expects) in `build.yml`'s `security-scan` job, and the same pin is used for the new per-image scans added in this phase's `containerize-and-push` job.
+- **Status:** Fixed
+
+---
+
 ## [BUG-0037] `./mvnw` committed without the executable bit — every GitHub Actions run on this repo has failed since CI first ran
 - **Date:** 2026-09-11
 - **Phase:** Phase 14 — CI/CD and deployment (found at the very start, before any new pipeline work — CI has to actually pass before more is stacked on it)

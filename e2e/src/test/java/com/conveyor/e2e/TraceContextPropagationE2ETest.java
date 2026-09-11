@@ -19,16 +19,16 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * PLAN.md Phase 9's headline exit criterion: "an integration test asserts a single traceId
- * appears in spans from all five services for one order — trace propagation is tested, not
- * eyeballed." Runs the `observability` compose profile so Tempo is up to receive the export.
+ * PLAN.md Phase 9's headline exit criterion: "an integration test asserts a single traceId appears
+ * in spans from all five services for one order — trace propagation is tested, not eyeballed." Runs
+ * the `observability` compose profile so Tempo is up to receive the export.
  *
- * <p>The test supplies its own W3C {@code traceparent} header on {@code POST /orders} (rather
- * than discovering whatever trace ID order-service happened to generate), which is the standard
- * way an already-instrumented caller hands a trace onward — Spring's tracing filter continues a
- * valid incoming trace instead of starting a new one. That pins a known trace ID for the whole
- * saga, which then has to show up, via Kafka header propagation (spring.kafka.*.observation-
- * enabled), in spans from all five services.
+ * <p>The test supplies its own W3C {@code traceparent} header on {@code POST /orders} (rather than
+ * discovering whatever trace ID order-service happened to generate), which is the standard way an
+ * already-instrumented caller hands a trace onward — Spring's tracing filter continues a valid
+ * incoming trace instead of starting a new one. That pins a known trace ID for the whole saga,
+ * which then has to show up, via Kafka header propagation (spring.kafka.*.observation- enabled), in
+ * spans from all five services.
  *
  * <p>Requires {@code mvn -f e2e/pom.xml verify -DskipE2E=false} like the other E2E tests; unlike
  * them, this one also needs Tempo, so it brings the stack up with {@code --profile observability}.

@@ -89,9 +89,13 @@ jobs:
       # Testcontainers level by InvariantSoundnessTest/InvariantPrecisionTest (part of the
       # build-and-test job above); this step is the live-stack smoke gate — a clean system really
       # does come back clean through the whole compose network, not just in a unit test.
+      # --wait (BUG-0039): without it, `up -d` returns as soon as containers are *started*, not
+      # once the app services' own HEALTHCHECKs report healthy — the very next step used to hit
+      # order-service before Spring Boot had finished starting, a race invisible until BUG-0037's
+      # fix let this job run for the first time ever.
       - name: docker compose up, seed, place an order
         run: |
-          docker compose up -d --build
+          docker compose up -d --build --wait
           docker compose run --rm -e SPRING_PROFILES_ACTIVE=seed order-service
           docker compose run --rm -e SPRING_PROFILES_ACTIVE=seed inventory-service
 
@@ -113,7 +117,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scanner (filesystem)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -130,3 +134,246 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # PLAN.md Phase 14: "build -> test -> containerize -> push to GHCR." Gated on every test job
+  # above, not just build-and-test — kafka-compat, the compose-based e2e suite, the compose-based
+  # invariant-check gate, and both scanners all have to be green before anything is pushed anywhere.
+  # Only runs on an actual push to main (never on a pull_request build), so a PR from a fork can't
+  # push images using this repo's GITHUB_TOKEN.
+  containerize-and-push:
+    name: build + push ${{ matrix.service }} image to GHCR
+    runs-on: ubuntu-latest
+    needs: [build-and-test, kafka-compat, e2e, invariant-check, security-scan, secrets-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service:
+          [order-service, inventory-service, payment-service, saga-orchestrator, dispatch-service, conveyor-verifier]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute lowercase image repository (OCI requires it; GITHUB_REPOSITORY_OWNER isn't guaranteed lowercase)
+        id: repo
+        run: echo "repo=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/conveyor" >> "$GITHUB_OUTPUT"
+
+      # --provenance=false + a fixed SOURCE_DATE_EPOCH: the same two fixes Phase 13 needed for
+      # "same commit -> same digest" (BUG-0030), applied here for the identical reason — without
+      # them the image GHCR ends up with wouldn't even match what `scripts/kind-up.sh` builds
+      # locally from the same commit.
+      - name: Build and push
+        run: |
+          docker buildx build \
+            -f ${{ matrix.service }}/Dockerfile \
+            -t ${{ steps.repo.outputs.repo }}/${{ matrix.service }}:${{ github.sha }} \
+            -t ${{ steps.repo.outputs.repo }}/${{ matrix.service }}:latest \
+            --provenance=false --build-arg SOURCE_DATE_EPOCH=1704067200 \
+            --push .
+
+      # Phase 13's own bar (BUG-0035: a shaded CVE invisible to dependency:tree shipped in every
+      # image) applies to every image this pipeline ever produces, not just the ones built by hand
+      # that one session — scanning here, not just locally, is what makes that a standing gate.
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.repo.outputs.repo }}/${{ matrix.service }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+  # PLAN.md Phase 14: "spin up a fresh kind cluster inside the runner -> helm install -> smoke test
+  # -> invariant check as a deployment gate." Deliberately re-derives the cluster from scratch here
+  # rather than reusing scripts/kind-up.sh verbatim — that script builds+`kind load`s local images
+  # (no registry involved, its own comment says so); this job's whole point is proving the images
+  # that just landed in GHCR are the ones actually running, so it pulls them instead.
+  deploy-to-kind:
+    name: deploy the GHCR images to a fresh kind cluster and smoke-test them
+    runs-on: ubuntu-latest
+    needs: containerize-and-push
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Compute lowercase image repository
+        id: repo
+        run: echo "repo=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/conveyor" >> "$GITHUB_OUTPUT"
+
+      - name: kind cluster (same config scripts/kind-up.sh uses, so KindE2ESmokeTest's default NodePort URLs need no override)
+        run: kind create cluster --config infra/k8s/kind-config.yaml
+
+      - name: Calico CNI (kindnetd does not enforce NetworkPolicy)
+        run: |
+          kubectl apply -f infra/k8s/calico/calico.yaml
+          kubectl -n kube-system rollout status daemonset/calico-node --timeout=180s
+          kubectl -n kube-system rollout status deployment/calico-kube-controllers --timeout=180s
+
+      - name: namespace + metrics-server
+        run: |
+          kubectl apply -f infra/k8s/namespace.yaml
+          kubectl apply -f infra/k8s/metrics-server/components.yaml
+
+      - name: Strimzi Kafka operator
+        run: |
+          kubectl apply -n conveyor -f infra/k8s/strimzi/strimzi-cluster-operator-1.2.0.yaml
+          kubectl -n conveyor rollout status deployment/strimzi-cluster-operator --timeout=180s
+
+      - name: Kafka cluster + topics
+        run: |
+          kubectl apply -f infra/k8s/kafka/kafka-cluster.yaml
+          kubectl -n conveyor wait kafka/conveyor-kafka --for=condition=Ready --timeout=300s
+          kubectl apply -f infra/k8s/kafka/kafka-topics.yaml
+
+      # The images this job deploys are private-by-default GHCR packages (repo's GITHUB_TOKEN
+      # pushed them, ownership defaults to private) — the cluster's own pull needs the same
+      # credential, since nothing about a fresh kind cluster is already authenticated to GHCR.
+      - name: GHCR image-pull secret
+        run: |
+          kubectl create secret docker-registry ghcr-pull-secret -n conveyor \
+            --docker-server=ghcr.io \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }}
+
+      - name: helm install (GHCR images, this commit's tag)
+        run: |
+          helm upgrade --install conveyor infra/helm/conveyor \
+            --namespace conveyor --create-namespace \
+            --set image.repository=${{ steps.repo.outputs.repo }} \
+            --set image.tag=${{ github.sha }} \
+            --set imagePullSecrets[0].name=ghcr-pull-secret \
+            --wait --timeout 8m
+
+      - name: wait for every Deployment to roll out
+        run: kubectl -n conveyor get deploy -o name | xargs -I{} kubectl -n conveyor rollout status {} --timeout=180s
+
+      # PLAN.md Phase 13's own smoke test, reused rather than duplicated (KindE2ESmokeTest already
+      # covers happy path, insufficient-stock compensation, and forced-payment-decline compensation
+      # against exactly this cluster shape's NodePorts) — this is the "deployed-in-CI system serves
+      # a real order end to end" exit criterion.
+      - name: Smoke test (KindE2ESmokeTest against this cluster's NodePorts)
+        env:
+          E2E_TARGET: kind
+        run: ./mvnw -B -f e2e/pom.xml test -DskipE2E=false -Dtest=KindE2ESmokeTest
+
+      # PLAN.md Phase 14: "the invariant checker runs in-cluster and reports clean" as a deployment
+      # gate, not merely a scheduled side effect — trigger the chart's own CronJob once, on demand,
+      # rather than waiting up to a minute for its schedule and guessing which run corresponds to
+      # the orders the smoke test just placed.
+      - name: Invariant check gate (one-shot run of the in-cluster CronJob)
+        run: |
+          kubectl create job ci-invariant-check -n conveyor --from=cronjob/conveyor-verifier
+          for i in $(seq 1 24); do
+            if [ "$(kubectl -n conveyor get job ci-invariant-check -o jsonpath='{.status.succeeded}')" = "1" ]; then
+              echo "invariant check clean"; exit 0
+            fi
+            if [ "$(kubectl -n conveyor get job ci-invariant-check -o jsonpath='{.status.failed}')" = "1" ]; then
+              echo "invariant check reported a violation:"
+              kubectl -n conveyor logs job/ci-invariant-check
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "invariant check job did not complete in time"
+          kubectl -n conveyor describe job/ci-invariant-check
+          exit 1
+
+      - name: Dump pod status and logs on failure
+        if: failure()
+        run: |
+          kubectl -n conveyor get pods -o wide
+          kubectl -n conveyor get events --sort-by=.lastTimestamp
+          for p in $(kubectl -n conveyor get pods -o name); do
+            echo "=== $p ==="; kubectl -n conveyor logs "$p" --all-containers --tail=200 || true
+          done
+
+      - name: Tear down the kind cluster
+        if: always()
+        run: kind delete cluster --name conveyor
+
+  # PLAN.md Phase 14: "Terraform for VPC, EKS, RDS, ECR, IAM/IRSA is written in full and kept in the
+  # tree, gated in CI by terraform validate and terraform plan only. terraform apply never runs."
+  # ADR-13/ARCHITECTURE.md §15.4: the fallback path stays specified and CI-checked for drift, but
+  # unexercised — `plan` here runs against dummy credentials and a hardcoded AZ list (see
+  # infra/terraform/README.md) specifically so this job needs no real AWS account to be meaningful.
+  terraform-plan:
+    name: terraform validate + plan (AWS fallback path, ADR-13 — never applied)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+
+      - name: terraform init (local backend only — no remote state, nothing to authenticate to)
+        run: terraform init -backend=false
+
+      - name: terraform validate
+        run: terraform validate
+
+      # Dummy credentials: infra/terraform's provider block sets skip_credentials_validation and
+      # skip_requesting_account_id, and every data source that would otherwise need a live AWS call
+      # (availability zones, the caller's own account ID) is hardcoded instead — see
+      # infra/terraform/README.md. That is what makes this `plan` runnable with no AWS account at
+      # all, which is the entire point of ADR-13's "$0, not merely time-boxed" target.
+      - name: terraform plan (dummy credentials, no real AWS account touched)
+        env:
+          AWS_ACCESS_KEY_ID: dummy-access-key-id
+          AWS_SECRET_ACCESS_KEY: dummy-secret-access-key
+          AWS_REGION: us-east-1
+        run: terraform plan -input=false -out=/dev/null
+
+  # PLAN.md Phase 14's own exit criterion: confirm the apply subcommand is absent from every
+  # automated path (grep the workflow files as part of this check). Proven, not assumed. Deliberately
+  # never writes terraform and apply adjacent to each other anywhere in this job's own name/step
+  # text/echo output below — every other mention of that two-word phrase in this file lives in a `#`
+  # comment (like this one), which the grep pattern skips, but a `name:`/`echo` line has no `#` at
+  # its start and would otherwise trip its own check.
+  verify-no-terraform-apply:
+    name: grep-verify no workflow invokes terraform's apply subcommand
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: fail if any workflow file invokes terraform's apply subcommand
+        run: |
+          if grep -rE '^[^#]*\bterraform[[:space:]]+apply\b' .github/workflows/; then
+            echo "::error::a terraform 'apply' invocation was found in a workflow file — ADR-13 requires it never runs automatically"
+            exit 1
+          fi
+          echo "confirmed: no workflow file invokes terraform's apply subcommand"

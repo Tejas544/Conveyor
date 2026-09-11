@@ -127,7 +127,8 @@ class KindE2ESmokeTest {
   private void armPaymentDecline(double probability) throws Exception {
     JsonResponse response =
         RestClient.post(
-            PAYMENT_BASE + "/test/failure-mode", Map.of("mode", "DECLINE", "probability", probability));
+            PAYMENT_BASE + "/test/failure-mode",
+            Map.of("mode", "DECLINE", "probability", probability));
     assertThat(response.status()).isEqualTo(200);
   }
 
@@ -165,8 +166,7 @@ class KindE2ESmokeTest {
             "paymentMethodToken", "tok_test_visa");
 
     JsonResponse response =
-        RestClient.post(
-            ORDER_BASE + "/api/v1/orders", request, UUID.randomUUID().toString());
+        RestClient.post(ORDER_BASE + "/api/v1/orders", request, UUID.randomUUID().toString());
     assertThat(response.status()).isEqualTo(202);
     return UUID.fromString(response.body().path("orderId").asText());
   }

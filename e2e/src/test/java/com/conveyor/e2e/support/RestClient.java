@@ -42,9 +42,9 @@ public final class RestClient {
   }
 
   /**
-   * {@code extraHeaders} exists for {@code TraceContextPropagationE2ETest}: a caller-supplied
-   * W3C {@code traceparent} header lets the test pin the trace ID the whole pipeline will share,
-   * rather than having to discover it after the fact.
+   * {@code extraHeaders} exists for {@code TraceContextPropagationE2ETest}: a caller-supplied W3C
+   * {@code traceparent} header lets the test pin the trace ID the whole pipeline will share, rather
+   * than having to discover it after the fact.
    */
   public static JsonResponse post(
       String url, Object bodyObject, String idempotencyKey, Map<String, String> extraHeaders)
