@@ -20,6 +20,17 @@ Format for each entry:
 
 ---
 
+## [BUG-0037] `./mvnw` committed without the executable bit — every GitHub Actions run on this repo has failed since CI first ran
+- **Date:** 2026-09-11
+- **Phase:** Phase 14 — CI/CD and deployment (found at the very start, before any new pipeline work — CI has to actually pass before more is stacked on it)
+- **Severity:** Critical
+- **Symptom:** `gh run list` shows all 4 recorded workflow runs on `main` (Phase 9, 11, 12, 13 close-out pushes) as `failure`. Every job that runs `./mvnw` fails identically: `./mvnw: Permission denied` / `Process completed with exit code 126`. This means CI has never gone green even once since it started actually running, silently contradicting Phase 1's own exit criterion ("CI green on a pull request") and every later phase's implicit assumption that the pipeline was healthy.
+- **Root cause:** `git ls-files -s mvnw` shows mode `100644` (not executable) since the commit that added it in Phase 1 (`9c291b0`). This machine is Windows, where the executable bit is meaningless locally, so `./mvnw` always worked here regardless of the git-tracked mode — the discrepancy was only ever observable on a POSIX CI runner, and nobody had checked `gh run list` until this phase.
+- **Fix:** `git update-index --chmod=+x mvnw` (and `mvnw.cmd` left as-is, Windows doesn't need it), committed as its own `fix:` commit ahead of any other Phase 14 work.
+- **Status:** Fixed
+
+---
+
 ## [BUG-0036] A late `PaymentCharged` reply arriving mid-compensation (not yet `ABORTED`) was silently dropped — customer charged, never refunded
 - **Date:** 2026-09-11
 - **Phase:** Phase 13 — Containerization and Kubernetes (local); found live by this phase's own HPA
