@@ -93,14 +93,15 @@ class SagaEventProjectionListenerTest extends AbstractIntegrationTest {
    * BUG-0026: {@code SagaTimeoutSweeper}'s deadline-driven aborts publish {@code OrderCancelled}
    * directly, with no intermediate {@code InventoryReservationFailed}/{@code PaymentFailed} reply
    * to drive this listener through {@code COMPENSATING} first — unlike a reply-triggered
-   * compensation. Before the fix, {@code INVENTORY_RESERVED -> CANCELLED} was an illegal
-   * transition the listener silently swallowed (logged, not thrown), leaving the order stuck
-   * reporting an in-progress status forever even though the saga had already correctly reached
-   * {@code ABORTED}. Found live via Phase 11's chaos matrix.
+   * compensation. Before the fix, {@code INVENTORY_RESERVED -> CANCELLED} was an illegal transition
+   * the listener silently swallowed (logged, not thrown), leaving the order stuck reporting an
+   * in-progress status forever even though the saga had already correctly reached {@code ABORTED}.
+   * Found live via Phase 11's chaos matrix.
    */
   @Test
-  void orderCancelledAdvancesOrderStatusDirectlyFromInventoryReservedWithNoInterveningCompensatingEvent()
-      throws Exception {
+  void
+      orderCancelledAdvancesOrderStatusDirectlyFromInventoryReservedWithNoInterveningCompensatingEvent()
+          throws Exception {
     UUID orderId = UUID.randomUUID();
     transactionTemplate.executeWithoutResult(
         status -> {

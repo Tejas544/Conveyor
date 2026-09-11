@@ -11,8 +11,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * conveyor-verifier is the one service in this codebase with no single "own" database — it has
- * five, via {@link com.conveyor.verifier.config.ServiceDatabases}'s own manually-built
- * {@code HikariDataSource}s, none of them "the" datasource — so it deliberately never sets {@code
+ * five, via {@link com.conveyor.verifier.config.ServiceDatabases}'s own manually-built {@code
+ * HikariDataSource}s, none of them "the" datasource — so it deliberately never sets {@code
  * spring.datasource.url}. Spring Boot's own {@code DataSourceAutoConfiguration} (and the
  * transaction-manager/JdbcTemplate auto-configurations layered on it) still activate by default
  * whenever {@code DataSource} is on the classpath, regardless of whether anything explicitly
