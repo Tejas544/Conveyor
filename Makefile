@@ -1,4 +1,4 @@
-.PHONY: up down logs build test verify seed reset ps observability-up observability-down invariant-check chaos-matrix load kind-up kind-down
+.PHONY: up down logs build test verify seed reset ps observability-up observability-down invariant-check chaos-matrix load kind-up kind-down teardown cost-check
 
 up:
 	docker compose up -d --build
@@ -85,3 +85,20 @@ kind-up:
 
 kind-down:
 	./scripts/kind-down.sh
+
+# PLAN.md Phase 14 / ARCHITECTURE.md §15.3: local hygiene (nothing here can ever cost money on the
+# $0 path — kind-down.sh and `docker compose down -v` are the same teardown Phase 13/1 already use)
+# plus, only if the AWS fallback path (§15.4) was ever actually applied by hand, the one command
+# that would tear *that* down. See infra/teardown.sh for the full detail and infra/terraform/README.md
+# for why that last step is never run automatically.
+teardown:
+	./infra/teardown.sh
+
+# ARCHITECTURE.md §15.3: "mostly documents *why* there is nothing to check for the default path."
+cost-check:
+	@echo "Executed path (kind/k3d, GHCR, GitHub Pages, containerized Postgres, Strimzi Kafka, Atlas M0):"
+	@echo "  \$$0 by construction (ARCHITECTURE.md §15.3) -- nothing in it can bill."
+	@echo "AWS fallback path (§15.4), only relevant if a human has explicitly applied infra/terraform:"
+	@echo "  aws eks list-clusters / aws rds describe-db-instances / aws ec2 describe-nat-gateways"
+	@echo "  would each need to return empty for the account to be at \$$0. Not run here automatically --"
+	@echo "  this target only documents what to check, since this project never applies that path itself."

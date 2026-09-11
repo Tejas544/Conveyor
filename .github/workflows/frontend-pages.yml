@@ -1,0 +1,80 @@
+name: frontend-pages
+
+# PLAN.md Phase 14: "Frontend pipeline: build -> deploy to Vercel / Cloudflare Pages -> real public
+# URL, independent of whether a cluster is up." GitHub Pages instead of Vercel/Cloudflare Pages —
+# both listed as equally valid options in ARCHITECTURE.md §15.2/ADR-13 — chosen specifically because
+# it needs no new account and no repo secrets: this workflow authenticates with the same
+# GITHUB_TOKEN every other job already has, which is the more $0-forever-by-construction reading of
+# ADR-13's own goal.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-pages.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run test -- --run
+
+      # docs/DEPLOYMENT.md explains this pairing in full: the built dashboard talks to whichever
+      # backend is running on *the browser's own machine* (localhost:8081-8085 — docker-compose.yml
+      # and infra/k8s/kind-config.yaml deliberately publish the identical ports), not to anything
+      # hosted by this CI job. VITE_BASE_PATH matches this repo's actual Pages project-site path
+      # (main.tsx passes it to BrowserRouter as `basename` via Vite's own import.meta.env.BASE_URL).
+      - name: Build (static, pointed at localhost — see docs/DEPLOYMENT.md)
+        env:
+          VITE_BASE_PATH: /Conveyor/
+          VITE_ORDER_API_URL: http://localhost:8081
+          VITE_INVENTORY_API_URL: http://localhost:8082
+          VITE_PAYMENT_API_URL: http://localhost:8083
+          VITE_SAGA_API_URL: http://localhost:8084
+          VITE_DISPATCH_API_URL: http://localhost:8085
+        run: npm run build
+
+      # GitHub Pages serves 404.html for any path it doesn't recognize as a static file — a copy of
+      # index.html there is the standard way an SPA's client-side routes (react-router's /login,
+      # /orders/:id, /inventory) survive a hard refresh or a direct link instead of 404ing for real.
+      - name: SPA fallback for deep links
+        run: cp dist/index.html dist/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
