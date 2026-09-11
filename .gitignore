@@ -48,4 +48,5 @@ kubeconfig*
 /chaos/results/*.json
 /chaos/results/*.jsonl
 /chaos/__pycache__/
+/load/results/
 /RESULTS.local.md

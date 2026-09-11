@@ -1,4 +1,4 @@
-.PHONY: up down logs build test verify seed reset ps observability-up observability-down invariant-check chaos-matrix
+.PHONY: up down logs build test verify seed reset ps observability-up observability-down invariant-check chaos-matrix load
 
 up:
 	docker compose up -d --build
@@ -54,3 +54,26 @@ invariant-check:
 # no-broker-fault smoke run while iterating on the harness itself.
 chaos-matrix:
 	python3 chaos/run_matrix.py $(if $(QUICK),--quick,)
+
+# PLAN.md Phase 12: k6 load test, containerized (no host k6 install required — same reasoning as
+# every other `make` target in this file being a thin docker/mvnw wrapper). Needs the rest of the
+# stack already up and seeded (`make up && make seed`); `--profile observability` too if you want
+# Tempo/Grafana available for the trace-based bottleneck analysis RESULTS.md's Phase 12 section
+# describes. SCENARIO defaults to `smoke`; pass SCENARIO=ramp|soak|spike for the other three.
+# `soak` additionally takes SOAK_VUS (set to the concurrency ramp.js identified as the knee).
+# Addresses the stack via its published host ports (host.docker.internal), the same path a real
+# client uses — not the internal conveyor_conveyor network's bare service names, which silently
+# break the refresh-token cookie under RFC 6265's Public-Suffix-List rule (see load/lib/common.js
+# and BUGS.md). --network conveyor_conveyor is still attached for parity with a stack that has no
+# published ports (e.g. a future K8s ClusterIP-only target); host.docker.internal resolves either
+# way on Docker Desktop.
+load:
+	mkdir -p load/results
+	docker run --rm --network conveyor_conveyor \
+		-v "$(CURDIR)/load:/scripts" \
+		-e ORDER_BASE_URL=http://host.docker.internal:8081/api/v1 \
+		-e INVENTORY_BASE_URL=http://host.docker.internal:8082/api/v1 \
+		-e SOAK_VUS=$(SOAK_VUS) \
+		-e SOAK_DURATION=$(SOAK_DURATION) \
+		grafana/k6 run /scripts/$(or $(SCENARIO),smoke).js \
+		--summary-export=/scripts/results/$(or $(SCENARIO),smoke)-summary.json
