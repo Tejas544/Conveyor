@@ -597,35 +597,60 @@ nothing to score against).
 
 ---
 
-## Phase 12 — Load test · **M**
+## Phase 12 — Load test · **M** · ✅ Complete (2026-09-11)
 
 **Goal.** Honest throughput and latency numbers, with the bottleneck identified.
 
 **Deliverables.**
-- k6 scenarios: smoke, ramp-to-find-the-knee, sustained soak (30 min), spike.
-  Thresholds set on p99 and error rate so a run passes or fails rather than
-  merely producing a chart.
-- Custom metric: **end-to-end saga completion latency**, measured from HTTP 202
-  to `CONFIRMED` (polling the SSE stream), which is the number that actually
-  matters and is not the HTTP response time.
-- Bottleneck analysis using Phase 9's traces: which step dominates p99, and why.
-- `RESULTS.md`: throughput vs. concurrency, p50/p95/p99 (both HTTP and
-  end-to-end), error rate, resource usage, the knee, and the identified
-  bottleneck.
+- [x] k6 scenarios: smoke, ramp-to-find-the-knee, sustained soak (30 min), spike
+      (`load/smoke.js`, `load/ramp.js`, `load/soak.js`, `load/spike.js`, shared
+      helpers in `load/lib/common.js`). Thresholds set on p99 latency and error
+      rate (`place_order_failed`, `orders_stuck_total`) — soak's thresholds
+      passed live; spike's `orders_stuck_total==0` threshold **failed** (1/4,942)
+      and is reported as such rather than silently re-run until green — see
+      RESULTS.md for why that one order was verified live to have converged
+      correctly, not lost.
+- [x] Custom metric: **end-to-end saga completion latency**
+      (`saga_completion_latency_ms`), measured from HTTP `202` to
+      `GET /orders/{id}` first reporting `CONFIRMED`/`CANCELLED` (polling, not
+      the SSE stream — see CONTEXT.md's Key Decisions Log for why), the number
+      that actually matters and is not the HTTP response time (reported
+      separately, and stays under 17 ms through the knee).
+- [x] Bottleneck analysis using Phase 9's traces: `saga-orchestrator`'s
+      single-threaded `SagaReplyListener` Kafka consumer, evidenced by
+      comparing the same message's consumption-lag at two consumer groups
+      across a low-concurrency and a high-concurrency trace — not CPU (peak
+      20-39%), not the outbox interval (flat ~200-400ms regardless of load).
+- [x] `RESULTS.md`: throughput vs. concurrency (7-step table), p50/p90/p95/p99
+      (both HTTP and end-to-end), error rate, resource usage (CPU/heap/outbox
+      lag), the knee (120 VUs, ~45.8 orders/s), and the identified bottleneck.
 
 **Dependencies.** Phase 9 (interpretation), Phase 11 (a system known to be
 correct — measuring the throughput of a system that loses orders is meaningless).
 
 **Exit criteria.**
-- [ ] Sustained-load run at the identified knee for ≥30 min with zero invariant
-      violations (the checker runs throughout) and zero lost orders.
-- [ ] Numbers recorded with the hardware and configuration they were measured
-      on. A number without its conditions is not a result.
-- [ ] The bottleneck is **named and evidenced** by a trace, not guessed.
-- [ ] **Regressions reported.** If throughput improves and p99 worsens, both are
-      stated — per the EdgeRAG brief's rule that reporting a regression
-      unprompted is the maturity signal.
-- [ ] k6 scripts committed and runnable via `make load`.
+- [x] Sustained-load run at the identified knee for ≥30 min with zero invariant
+      violations (the checker runs throughout) and zero lost orders. 30m03s at
+      120 VUs (the ramp-identified knee): 66,457 orders, 100% confirmed, zero
+      stuck, zero placement/poll failures; `conveyor_verifier_clean` 187/187
+      clean samples, the pre-existing violation counter (stale data from
+      Phase 10/11's chaos-matrix history on the same persistent volume)
+      unchanged across the whole run — zero new violations attributable to
+      this phase's load.
+- [x] Numbers recorded with the hardware and configuration they were measured
+      on. A number without its conditions is not a result. RESULTS.md's
+      "Conditions" subsection: host spec, container topology, no resource
+      limits (pre-Phase-13), Redpanda `--smp=1`, k6 version, reproduce command.
+- [x] The bottleneck is **named and evidenced** by a trace, not guessed. Two
+      real Tempo traces (40 VUs vs. 160 VUs) compared span-by-span; the gap
+      that grows with load is isolated to one specific consumer, named and
+      root-caused (no explicit `concurrency` anywhere in the codebase, Spring
+      Kafka's `concurrency=1` default).
+- [x] **Regressions reported.** 120→160 VUs: throughput **−9%** and p99 latency
+      **+92%** simultaneously — stated in RESULTS.md's ramp table and prose,
+      not only the 120-VU number that looks best.
+- [x] k6 scripts committed and runnable via `make load` (SCENARIO=smoke|ramp|
+      soak|spike; `soak` additionally takes SOAK_VUS/SOAK_DURATION).
 
 ---
 

@@ -20,6 +20,71 @@ Format for each entry:
 
 ---
 
+## [BUG-0029] k6 load-test harness: refresh-token cookie silently dropped when addressing the stack by Docker's internal (dot-less) service hostname
+- **Date:** 2026-09-11
+- **Phase:** Phase 12 — Load test (harness bug, found via the first 30-minute soak run)
+- **Severity:** Low — self-healing (every failed refresh fell back to a fresh login with zero
+  effect on the soak run's actual results: 66,457/66,457 orders still confirmed), but wrong
+  behavior nonetheless, and worth recording since it is a genuinely reusable gotcha for any future
+  Docker-network-internal load generator, not specific to this codebase.
+- **Symptom:** `http_req_failed` showed 240 failures in the first 30-minute soak run, all tagged
+  `name=auth_refresh`, `status=401`. Functionally harmless (`ensureFreshToken`'s fallback silently
+  re-logged-in on every failure), so the run's real metrics (orders confirmed/stuck/failed) were
+  unaffected — but a login should not need to happen twice as often as intended.
+- **Root cause:** confirmed live with `curl -v`: `cookie 'refreshToken' dropped, domain '[file]'
+  must not set cookies for 'order-service'`. `order-service`'s Docker Compose service name has no
+  dot in it, which makes it a **Public-Suffix-List "public suffix"** as far as RFC 6265 cookie
+  handling is concerned — both `curl`'s and k6's (`golang.org/x/net/publicsuffix`) cookie jars
+  correctly refuse, per spec, to store a cookie for one, exactly as they would refuse one for
+  `com` or `co.uk`. The refresh token (ADR-5) is deliberately an `HttpOnly` cookie with no
+  explicit `Domain` attribute; adding one would not fix this either, since a cookie's `Domain`
+  attribute being a public suffix is independently disallowed by the same rule (RFC 6265bis). **Not
+  a product defect** — a real client only ever reaches this system via `localhost` (specially
+  exempted from the public-suffix check by every major implementation, including Go's) or a real
+  registrable domain, never the internal service-mesh DNS name, so this can only ever surface in a
+  load generator that deliberately addresses the mesh directly, which none of this project's other
+  test suites (Testcontainers, `e2e`, Playwright) do.
+- **Fix:** `load/lib/common.js`'s default `ORDER_BASE`/`INVENTORY_BASE` and the `Makefile`'s
+  `load` target now address the stack via `host.docker.internal:808x` (its published host ports —
+  a real, dotted, PSL-exempt hostname) instead of the internal `conveyor_conveyor` network's bare
+  service names, confirmed live via the same `curl` reproduction (login then refresh against
+  `host.docker.internal` returns `200`). Incidentally the more representative choice regardless of
+  the cookie issue: it is the same path a real client actually uses.
+- **Status:** Fixed. Re-verified: the subsequent spike run (`load/spike.js`, 5 m 20 s, 4,942
+  orders, multiple refresh cycles per VU) shows zero `auth_refresh` failures.
+
+---
+
+## [BUG-0028] k6 load-test harness: wrong access-token-expiry field name silently forced a refresh (and a doomed one) on every single request
+- **Date:** 2026-09-11
+- **Phase:** Phase 12 — Load test (harness bug, found in the smoke test's first run, before any
+  scenario costing real wall-clock time was committed to)
+- **Severity:** Low — caught immediately by the smoke test existing for exactly this purpose
+  ("prove the rest of the scripts are measuring the right thing before spending real wall-clock
+  time on them" — see `RESULTS.md`'s Phase 12 methodology), never affected a scenario that
+  mattered.
+- **Symptom:** the smoke test's first run showed `http_req_failed` at 12.33% (28/227), exactly
+  matching the placed-order count — every single `POST /orders`-triggered iteration was also
+  producing one failing request, but neither `place_order_failed` nor `poll_order_failed` (this
+  harness's own custom, `check()`-backed rate metrics) showed anything wrong at all, which is what
+  made it worth chasing rather than dismissing as expected noise.
+- **Root cause:** `load/lib/common.js`'s `login()` read `body.expiresInSeconds`, but
+  `AuthResponse` (order-service) actually serializes the field as `expiresIn` (confirmed via a
+  direct `curl` against `/auth/login`). The resulting `undefined` made
+  `ensureFreshToken`'s guard (`ageSeconds < session.expiresInSeconds * 0.7`) evaluate
+  `ageSeconds < NaN`, which is `false` unconditionally — so every iteration, for every VU, called
+  `POST /auth/refresh` regardless of how recently it had logged in. Compounded by a second, related
+  mistake in the same function: it read a non-existent `body.refreshToken` from the login
+  response — the refresh token is never in the JSON body at all (see BUG-0029) — so every one of
+  those unconditional refresh calls was doomed to fail regardless.
+- **Fix:** corrected the field name; the `refreshToken`-in-body handling was removed entirely as
+  part of BUG-0029's fix (the correct mechanism is k6's own per-VU cookie jar, populated
+  automatically by `Set-Cookie` at login, not anything threaded through JS state by hand).
+- **Status:** Fixed. Re-verified: the corrected smoke test shows `http_req_failed` at 0.00%
+  (0/174).
+
+---
+
 ## [BUG-0027] "Money moved, nobody told" and its inventory twin: a late reply arriving after the saga already timed out and aborted was silently discarded, leaving a real charge or a real reservation permanently orphaned
 - **Date:** 2026-09-11
 - **Phase:** Phase 11 — Chaos matrix (bug is from Phase 6; found live via the same chaos trials that

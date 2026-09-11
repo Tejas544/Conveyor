@@ -1,13 +1,13 @@
-# Context — Last updated: 2026-09-11 (Phase 11 complete)
+# Context — Last updated: 2026-09-11 (Phase 12 complete)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 12 — Load test (not started).** Phase 11 closed this session, human
-sign-off received to run Phases 10 and 11 back-to-back ("Start Phase 10 and
-then followed by 11 in similar way after 10 completes successfully").
+**Phase 13 — Containerization and Kubernetes (local) (not started).** Phase 12
+closed this session, human sign-off received to proceed ("Start Phase 12 — go
+ahead as planned").
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -348,10 +348,55 @@ then followed by 11 in similar way after 10 completes successfully").
   dangerous point) was 7/7 clean with 0.02–0.03s convergence — the fastest-recovering point in the
   matrix, the transactional outbox pattern's own argument demonstrated with a number. Full writeup
   in `RESULTS.md`.
+- Phase 12 — Load test ✅ (2026-09-11). k6 (containerized, `grafana/k6`, no host install —
+  `load/smoke.js`/`ramp.js`/`soak.js`/`spike.js`, shared helpers in `load/lib/common.js`, `make
+  load SCENARIO=...`). Two real bugs found and fixed in the harness itself before any long-running
+  scenario was trusted — see BUGS.md BUG-0028 (wrong `expiresIn` field name silently forced a
+  refresh, and a doomed one, on every single request) and **BUG-0029** (a genuinely reusable
+  gotcha: Docker's bare, dot-less internal service hostnames are Public-Suffix-List "public
+  suffixes" under RFC 6265, so both `curl`'s and k6's cookie jars correctly *refuse* to store the
+  refresh-token cookie for one — fixed by addressing the stack via `host.docker.internal`'s
+  published ports instead, which is also the more representative choice: it's the same path a
+  real client uses, not the service mesh's internal name).
+  <br>**Ramp-to-the-knee** (7 fixed-concurrency steps, 90s each, 16,671 orders, 100% confirmed at
+  every level including 160 VUs — the system queues under load, it does not lose orders): the knee
+  is **120 VUs / ~45.8 orders/s** — throughput grows near-linearly to 40 VUs, visibly
+  sub-linearizes at 80, gains almost nothing 80→120 (+50% concurrency for +6% throughput), then
+  **regresses** 120→160 (**−9% throughput, +92% p99 latency, simultaneously** — reported as the
+  genuine regression it is, per PLAN.md's own rule, not silently omitted in favor of the
+  best-looking number).
+  <br>**Bottleneck, evidenced by two real Tempo traces (40 VUs vs. 160 VUs), not guessed:**
+  resource usage ruled out CPU first (peak 20-39% on the busiest service, a 12-core host) — the
+  actual cause is `saga-orchestrator`'s `SagaReplyListener`, the only `@KafkaListener` in the
+  entire codebase confirmed to have no explicit `concurrency` set anywhere (grepped), so Spring
+  Kafka's autoconfigured default (`concurrency=1`, one consumer thread) serializes every saga's
+  reply processing through one thread. Direct trace evidence: `order-service`'s lightweight
+  projection listener and `saga-orchestrator`'s heavier state-transition listener consume the
+  *identical* Kafka message within ~17-133ms of each other at 40 VUs, but **~1.08-1.10 seconds**
+  apart at 160 VUs — every individual span's own execution time stays tiny (7-20ms) throughout;
+  the growing gap is queueing time, not processing time. Recorded as a finding for Phase 13+ to
+  act on (raising that one listener's concurrency is safe — replies are already
+  inbox-deduplicated and per-order transitions already guarded — not applied speculatively
+  mid-rigor-phase without its own dedicated before/after measurement).
+  <br>**30-minute soak at the knee** (120 VUs): 66,457 orders, 100% confirmed, zero stuck, zero
+  placement/poll failures, saga latency p99 6.67s (median stayed flat at 2.52s the whole 30
+  minutes — no backlog-shaped or leak-shaped drift over time). `conveyor_verifier_clean` 187/187
+  clean samples; the pre-existing violation counter (9× INV-DSP-01, 1× INV-ORD-01 — stale data
+  from this session's earlier Phase 10/11 chaos-matrix history on the same persistent Postgres
+  volume, confirmed via `conveyor-verifier`'s own live report to already be resolved) did not move
+  by even one during 66,457 new orders — zero new violations attributable to this phase's load.
+  <br>**Spike** (5→150→5 VUs, sudden step not gradual): 4,942 orders, 4,941 (99.98%) confirmed
+  within the 30s poll bound. The 1 that wasn't was checked live rather than assumed lost, per this
+  project's established Phase 11 practice — `GET /orders/summary` and `GET /sagas?stuck=true`,
+  queried minutes later, show **zero** non-terminal orders and **zero** stuck sagas anywhere in the
+  system. It converged correctly, just slower than the test's own 30s bound — graceful degradation
+  under a sudden burst, not order loss.
+  <br>Full writeup, the 7-step ramp table, both trace breakdowns, and resource-usage tables all in
+  `RESULTS.md`'s Phase 12 section.
 
 ## In Progress
-- **Nothing mid-flight** as of the last line written above. If Phase 12 has started, see the
-  Current Phase section for where it stands.
+- **Nothing mid-flight.** Phase 12 closed cleanly this session. Phase 13 (Containerization and
+  Kubernetes, local) has not started — see Next Steps.
 
 ## Blockers
 - **None currently open.** BUG-0007 (disk space) is resolved via the data-root
@@ -371,13 +416,18 @@ then followed by 11 in similar way after 10 completes successfully").
   always tear down any live compose stack before a full `verify` run here.
 
 ## Next Steps
-1. **Phase 12 — load test.** k6 scenarios (smoke, ramp-to-knee, 30-min soak,
-   spike), the end-to-end saga-completion-latency custom metric (HTTP 202 to
-   `CONFIRMED`, not HTTP response time), bottleneck analysis using Phase 9's
-   traces, `RESULTS.md`'s third section. Depends on Phase 11's own result
-   (a system known to be correct — measuring throughput of a system that
-   loses orders is meaningless) — Phase 11's canonical run found and fixed
-   two real bugs first, so this dependency was load-bearing, not a formality.
+1. **Phase 13 — Containerization and Kubernetes (local).** Hardened
+   Dockerfiles, one Helm chart with **resource requests/limits on every
+   deployment** (`CLAUDE.md` §7 — required for Phase 15's autoscaling
+   measurement to mean anything; also directly informed by Phase 12's own
+   finding that no service is CPU-bound today, so requests should be set from
+   observed usage, not guessed), Strimzi Kafka + Postgres + Mongo for the
+   local cluster, `kind`/`k3d` bring-up, an HPA dry run. A natural first
+   candidate once Helm values are in place: raise `SagaReplyListener`'s
+   listener `concurrency` above Spring Kafka's default of 1 and re-run
+   Phase 12's ramp scenario to confirm the knee moves — Phase 12 named and
+   trace-evidenced the bottleneck but deliberately did not apply the fix
+   speculatively mid-rigor-phase (see RESULTS.md's Phase 12 section).
 2. Consider revisiting `chaos/run_matrix.py`'s inter-repetition pacing for
    the same injection point (BUG-0025's remaining, accepted limitation — see
    RESULTS.md's "harness pacing limitation" note) if the chaos matrix is ever
@@ -390,6 +440,13 @@ then followed by 11 in similar way after 10 completes successfully").
    (Phase 9) at least gives it a Prometheus/Grafana/alert signal now; the
    dashboard itself still has no live push for it, only
    `GET /sagas?state=&stuck=true` polling.
+4. The 10 pre-existing `conveyor-verifier` violations (9× `INV-DSP-01`, 1×
+   `INV-ORD-01`) noted as stale/already-resolved throughout Phase 12's own
+   session (confirmed clean in the checker's live report both before and
+   after this phase's load runs, and the counter never moved) are worth a
+   deliberate `docker compose down -v` + reseed before Phase 13 begins, so
+   Phase 13's own live checks start from a demonstrably clean volume rather
+   than one carrying dead counters from Phase 10/11's chaos-matrix history.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -408,6 +465,50 @@ then followed by 11 in similar way after 10 completes successfully").
 
 ## Key Decisions Log
 
+- **Phase 12 — the end-to-end saga-completion-latency metric polls
+  `GET /orders/{id}` every 0.5s, not the SSE stream** PLAN.md's own wording
+  parenthetically suggested ("HTTP 202 to `CONFIRMED` (polling the SSE
+  stream)"). k6 has no built-in support for consuming a long-lived
+  `text/event-stream` connection (it would need `xk6-sse`, a third-party
+  extension requiring a custom-compiled k6 binary — real cost for a project
+  whose containerized-k6 approach deliberately requires no host install at
+  all, see below); plain polling against the same REST endpoint the dashboard
+  itself uses for its per-order timeline (Phase 8) measures the identical
+  customer-observable latency (time until the order's own status genuinely
+  reflects a terminal state) without that dependency. Recorded here as a
+  deliberate substitution rather than a silent deviation from the plan's own
+  wording, in the same spirit as every prior phase's Key Decisions Log entry.
+- **Phase 12 — k6 runs containerized (`grafana/k6`), never installed on the
+  host**, the same reasoning behind every other `make` target in this
+  project being a thin `docker`/`mvnw` wrapper (`CLAUDE.md`'s established
+  practice, and this machine specifically has no host `k6`, confirmed at the
+  start of this phase). Addressed via `host.docker.internal`'s published
+  ports rather than the internal `conveyor_conveyor` compose network's bare
+  service names — not merely a style choice, but required for the
+  refresh-token cookie to work at all under RFC 6265's Public-Suffix-List
+  rule (BUG-0029) — and, incidentally, the more representative choice
+  regardless: it is the same path a real client actually uses.
+- **Phase 12 — the soak concurrency (120 VUs) is the point of *maximum
+  sustained throughput before regression*, not the point where latency first
+  starts visibly climbing (80 VUs).** Throughput still grows (if only
+  marginally, +6%) from 80→120 VUs; it only *regresses* past 120. "The knee"
+  is read here as "the last point before the system gets strictly worse on
+  both axes at once," which is the more defensible definition to run a
+  30-minute sustained-load exit criterion against — running the soak at 160
+  (past the regression) would have measured an already-known-bad operating
+  point instead of the system's actual sustainable capacity.
+- **Phase 12 — the bottleneck fix the trace evidence points to (raising
+  `SagaReplyListener`'s Kafka listener `concurrency` above Spring's default
+  of 1) was named and evidenced, not applied.** Per this project's own
+  practice of not making architecture changes speculatively mid-rigor-phase
+  without a dedicated before/after measurement (unlike BUG-0026/BUG-0027 in
+  Phase 11, which were genuine correctness defects requiring an immediate
+  fix per `CLAUDE.md` §2.7 — this is a performance characteristic, not a
+  correctness one, and the system already met every Phase 12 exit criterion
+  without it), the fix is recorded as a finding for Phase 13+ to pick up
+  alongside setting real Helm resource requests/limits, so its effect can be
+  measured against a clean before/after rather than folded silently into
+  this phase's own numbers.
 - **Phase 11 — the chaos harness arms and recovers exactly one container per
   trial, never all five.** The first working version recreated every app
   service on every trial (arm and disarm both); this turned out to be the
