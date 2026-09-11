@@ -20,6 +20,17 @@ Format for each entry:
 
 ---
 
+## [BUG-0042] `npm ci` fails on a peer-dependency conflict `npm install` had always silently tolerated
+- **Date:** 2026-09-11
+- **Phase:** Phase 14 — CI/CD and deployment (found the moment the first-ever frontend CI job ran `npm ci` against this lockfile)
+- **Severity:** Medium
+- **Symptom:** `frontend-pages.yml`'s `npm ci` step fails immediately with `ERESOLVE could not resolve` — `openapi-typescript@7.13.0` peer-depends on `typescript@^5.x`, but `package.json` pins `typescript@~6.0.2`.
+- **Root cause:** `npm install` (the only install command this repo's frontend had ever been built with, always locally, never in CI before this phase) only *warns* on an unresolvable peer dependency by default; `npm ci` — a from-scratch, strict install, which is what CI correctly uses instead — fails outright on the same conflict. The conflict itself isn't new: `openapi-typescript`'s peer range simply hasn't caught up to TypeScript 6 yet, and the actual build has been green under 6.0.3 the entire time (`tsc -b` compiles clean, all tests pass).
+- **Fix:** `frontend/.npmrc` with `legacy-peer-deps=true` — makes explicit what `npm install` was already doing implicitly, rather than downgrading a compiler version that already builds and tests clean.
+- **Status:** Fixed
+
+---
+
 ## [BUG-0041] Every other shell script in the repo had the same missing-executable-bit defect as BUG-0037
 - **Date:** 2026-09-11
 - **Phase:** Phase 14 — CI/CD and deployment (found auditing the repo after BUG-0037, while adding a new `infra/teardown.sh`)
