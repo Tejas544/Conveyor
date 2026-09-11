@@ -1,7 +1,10 @@
 # Build context is the repo root (multi-module reactor). e.g.:
 #   docker build -f conveyor-verifier/Dockerfile -t conveyor/conveyor-verifier .
 
-FROM eclipse-temurin:21-jdk-alpine AS build
+# Phase 13 (CLAUDE.md §7): base images pinned by digest, not just tag, so a rebuild of
+# this exact Dockerfile can never silently pick up a mutated eclipse-temurin:21-*-alpine tag --
+# required for "images are reproducible: same commit -> same digest" (PLAN.md Phase 13).
+FROM eclipse-temurin:21-jdk-alpine@sha256:6ea5548706b60ac0a602eaf48af74792cbab012d90e811ca8db6184b16b5c3d6 AS build
 WORKDIR /workspace
 
 COPY .mvn/ .mvn/
@@ -21,14 +24,22 @@ COPY conveyor-common/src conveyor-common/src
 COPY conveyor-verifier/src conveyor-verifier/src
 RUN ./mvnw -q -pl conveyor-verifier -am package -DskipTests
 
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:21-jre-alpine@sha256:974b08960c5d96694c780e65b2d5705268ab1e1ca1a0dd0caf4ba6c3fe34d699
+# BUG-0035 (Trivy, Phase 13): pin exact patched Alpine package versions rather than a bare
+# `apk upgrade` -- an unpinned upgrade would silently pick up whatever Alpine's repo serves on
+# build day, which is exactly the kind of non-determinism "images are reproducible: same
+# commit -> same digest" (PLAN.md Phase 13) rules out.
+RUN apk add --no-cache --upgrade libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 libexpat=2.8.4-r0
 RUN addgroup -S conveyor && adduser -S conveyor -G conveyor
 # ViolationReportWriter writes here (VERIFIER_REPORT_DIR); docker-compose.yml mounts a named volume
 # on top of it, but Docker only seeds a *new* named volume's content/ownership from what already
 # exists at that path in the image, so this has to be created and owned by the non-root user here,
 # before the volume is first created, or every write fails with AccessDeniedException (BUG-0024).
 RUN mkdir -p /var/log/conveyor-verifier && chown -R conveyor:conveyor /var/log/conveyor-verifier
-USER conveyor:conveyor
+# Numeric, not "conveyor:conveyor" (BUG-0033): Kubernetes's runAsNonRoot admission check
+# cannot verify a symbolic USER against the image config, only a numeric one -- addgroup -S/
+# adduser -S already assign fixed system UID/GID 100/101 on Alpine, this just spells them out.
+USER 100:101
 WORKDIR /app
 COPY --from=build --chown=conveyor:conveyor /workspace/conveyor-verifier/target/conveyor-verifier.jar app.jar
 
