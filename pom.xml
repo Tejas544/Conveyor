@@ -33,6 +33,7 @@
     <module>payment-service</module>
     <module>saga-orchestrator</module>
     <module>dispatch-service</module>
+    <module>conveyor-verifier</module>
     <!-- e2e is deliberately NOT a reactor module: every service's Dockerfile COPYs only the
          pom.xml files it needs to resolve its own `-am` build inside the image, and e2e has no
          compile dependency on any of them (it drives the whole stack over HTTP) — adding it here

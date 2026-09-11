@@ -200,6 +200,42 @@ services:
       redpanda: { condition: service_healthy }
     <<: *service-defaults
 
+  # ARCHITECTURE.md §12/§13, PLAN.md Phase 10 — the invariant checker, running continuously as a
+  # sidecar (the "locally" half of "a sidecar/CronJob locally and in K8s"; infra/k8s's manifest is
+  # the CronJob half, for when Phase 13 stands up a cluster). Always on, like the five app services
+  # above — correctness monitoring should not be opt-in.
+  conveyor-verifier:
+    build:
+      context: .
+      dockerfile: conveyor-verifier/Dockerfile
+    environment:
+      DB_HOST: postgres
+      ORDER_DB_NAME: ${ORDER_DB_NAME:-order_service}
+      INVENTORY_DB_NAME: ${INVENTORY_DB_NAME:-inventory_service}
+      PAYMENT_DB_NAME: ${PAYMENT_DB_NAME:-payment_service}
+      SAGA_DB_NAME: ${SAGA_DB_NAME:-saga_orchestrator}
+      DISPATCH_DB_NAME: ${DISPATCH_DB_NAME:-dispatch_service}
+      VERIFIER_DB_USER: ${VERIFIER_DB_USER:-conveyor_verifier}
+      VERIFIER_DB_PASSWORD: ${VERIFIER_DB_PASSWORD:-verifier_local_dev_only}
+      ORDER_SERVICE_BASE_URL: http://order-service:8081/api/v1
+      INVENTORY_SERVICE_BASE_URL: http://inventory-service:8082/api/v1
+      PAYMENT_SERVICE_BASE_URL: http://payment-service:8083/api/v1
+      SAGA_SERVICE_BASE_URL: http://saga-orchestrator:8084/api/v1
+      DISPATCH_SERVICE_BASE_URL: http://dispatch-service:8085/api/v1
+      <<: *tracing-env
+    ports:
+      - "8086:8086"
+    volumes:
+      - verifier-reports:/var/log/conveyor-verifier
+    depends_on:
+      postgres: { condition: service_healthy }
+      order-service: { condition: service_started }
+      inventory-service: { condition: service_started }
+      payment-service: { condition: service_started }
+      saga-orchestrator: { condition: service_started }
+      dispatch-service: { condition: service_started }
+    <<: *service-defaults
+
   # ARCHITECTURE.md §11/§15.1 — Prometheus + Grafana + Tempo, behind
   # `--profile observability` so the default `docker compose up` stays light.
   # The five app services above always emit metrics/traces (see x-tracing-env);
@@ -253,6 +289,7 @@ networks:
 volumes:
   postgres-data: {}
   mongo-data: {}
+  verifier-reports: {}
   prometheus-data: {}
   tempo-data: {}
   grafana-data: {}

@@ -13,6 +13,7 @@ COPY inventory-service/pom.xml inventory-service/pom.xml
 COPY payment-service/pom.xml payment-service/pom.xml
 COPY saga-orchestrator/pom.xml saga-orchestrator/pom.xml
 COPY dispatch-service/pom.xml dispatch-service/pom.xml
+COPY conveyor-verifier/pom.xml conveyor-verifier/pom.xml
 RUN ./mvnw -q -pl payment-service -am dependency:go-offline
 
 COPY conveyor-contracts/src conveyor-contracts/src

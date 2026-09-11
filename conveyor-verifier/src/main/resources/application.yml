@@ -1,0 +1,60 @@
+spring:
+  application:
+    name: conveyor-verifier
+
+conveyor:
+  verifier:
+    postgres:
+      host: ${DB_HOST:localhost}
+      port: ${DB_PORT:5432}
+      username: ${VERIFIER_DB_USER:conveyor_verifier}
+      password: ${VERIFIER_DB_PASSWORD:verifier_local_dev_only}
+      order-db: ${ORDER_DB_NAME:order_service}
+      inventory-db: ${INVENTORY_DB_NAME:inventory_service}
+      payment-db: ${PAYMENT_DB_NAME:payment_service}
+      saga-db: ${SAGA_DB_NAME:saga_orchestrator}
+      dispatch-db: ${DISPATCH_DB_NAME:dispatch_service}
+    http:
+      order-base-url: ${ORDER_SERVICE_BASE_URL:http://localhost:8081/api/v1}
+      inventory-base-url: ${INVENTORY_SERVICE_BASE_URL:http://localhost:8082/api/v1}
+      payment-base-url: ${PAYMENT_SERVICE_BASE_URL:http://localhost:8083/api/v1}
+      saga-base-url: ${SAGA_SERVICE_BASE_URL:http://localhost:8084/api/v1}
+      dispatch-base-url: ${DISPATCH_SERVICE_BASE_URL:http://localhost:8085/api/v1}
+    # A plain number binds as milliseconds (Spring Boot's Duration converter); ARCHITECTURE.md
+    # §13 default is 10s.
+    interval: ${VERIFIER_INTERVAL_MS:10000}
+    max-saga-age: ${VERIFIER_MAX_SAGA_AGE_MS:300000}
+    outbox-lag-threshold: ${VERIFIER_OUTBOX_LAG_THRESHOLD_MS:60000}
+    terminal-grace: ${VERIFIER_TERMINAL_GRACE_MS:30000}
+    report-directory: ${VERIFIER_REPORT_DIR:/var/log/conveyor-verifier}
+
+server:
+  port: ${SERVER_PORT:8086}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState
+        liveness:
+          include: livenessState
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0}
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+
+logging:
+  level:
+    com.conveyor.verifier: INFO

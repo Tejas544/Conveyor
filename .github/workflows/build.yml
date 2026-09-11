@@ -77,6 +77,35 @@ jobs:
         if: failure()
         run: docker compose logs --no-color || true
 
+  invariant-check:
+    name: conveyor-verifier one-shot pass against a live compose stack (PLAN.md Phase 10)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      # PLAN.md Phase 10: "make invariant-check exits non-zero on a seeded violation ... wired into
+      # the E2E CI job." Soundness/precision against seeded violations is already proven at the
+      # Testcontainers level by InvariantSoundnessTest/InvariantPrecisionTest (part of the
+      # build-and-test job above); this step is the live-stack smoke gate — a clean system really
+      # does come back clean through the whole compose network, not just in a unit test.
+      - name: docker compose up, seed, place an order
+        run: |
+          docker compose up -d --build
+          docker compose run --rm -e SPRING_PROFILES_ACTIVE=seed order-service
+          docker compose run --rm -e SPRING_PROFILES_ACTIVE=seed inventory-service
+
+      - name: make invariant-check (must exit 0 on a clean system)
+        run: make invariant-check
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose logs --no-color || true
+
+      - name: docker compose down
+        if: always()
+        run: docker compose down -v
+
   security-scan:
     name: Trivy filesystem scan
     runs-on: ubuntu-latest

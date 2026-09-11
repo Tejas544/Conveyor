@@ -1,0 +1,77 @@
+# PLAN.md Phase 10: "Deployment: a sidecar/CronJob locally and in K8s." docker-compose.yml runs the
+# sidecar shape (a continuous process, ScheduledVerificationRunner). This is the CronJob shape for
+# when Phase 13 stands up a real cluster — written now, alongside the code it deploys, per the same
+# "write it ahead, apply it later" posture ADR-13 already uses for the AWS Terraform. Not applied by
+# this phase; there is no cluster yet to apply it to. Runs the one-shot mode (SPRING_PROFILES_ACTIVE
+# =oneshot) on a schedule — a CronJob runs a container to completion, not a long-lived loop, so the
+# scheduled inside-out interval that matters locally (docker-compose's sidecar) is replaced here by
+# Kubernetes' own schedule, at the same 10s-equivalent-ish cadence via `schedule` below (K8s CronJob
+# has no sub-minute schedule support, so this necessarily runs less often than the compose sidecar —
+# a named, accepted difference between the two deployment shapes, not an oversight).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: conveyor-verifier
+  labels:
+    app.kubernetes.io/name: conveyor-verifier
+    app.kubernetes.io/part-of: conveyor
+spec:
+  schedule: "* * * * *" # every minute — the finest granularity a CronJob supports
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 45
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: conveyor-verifier
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: conveyor-verifier
+              image: ghcr.io/OWNER/conveyor-verifier:latest # ADR-13: GHCR, immutable tag = commit SHA in CI
+              env:
+                - name: SPRING_PROFILES_ACTIVE
+                  value: oneshot
+                - name: DB_HOST
+                  value: postgres
+                - name: ORDER_DB_NAME
+                  value: order_service
+                - name: INVENTORY_DB_NAME
+                  value: inventory_service
+                - name: PAYMENT_DB_NAME
+                  value: payment_service
+                - name: SAGA_DB_NAME
+                  value: saga_orchestrator
+                - name: DISPATCH_DB_NAME
+                  value: dispatch_service
+                - name: ORDER_SERVICE_BASE_URL
+                  value: http://order-service:8081/api/v1
+                - name: INVENTORY_SERVICE_BASE_URL
+                  value: http://inventory-service:8082/api/v1
+                - name: PAYMENT_SERVICE_BASE_URL
+                  value: http://payment-service:8083/api/v1
+                - name: SAGA_SERVICE_BASE_URL
+                  value: http://saga-orchestrator:8084/api/v1
+                - name: DISPATCH_SERVICE_BASE_URL
+                  value: http://dispatch-service:8085/api/v1
+                - name: VERIFIER_DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: conveyor-verifier-db
+                      key: username
+                - name: VERIFIER_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: conveyor-verifier-db
+                      key: password
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi

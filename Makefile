@@ -1,4 +1,4 @@
-.PHONY: up down logs build test verify seed reset ps observability-up observability-down
+.PHONY: up down logs build test verify seed reset ps observability-up observability-down invariant-check
 
 up:
 	docker compose up -d --build
@@ -39,3 +39,12 @@ verify:
 seed:
 	docker compose run --rm -e SPRING_PROFILES_ACTIVE=seed order-service
 	docker compose run --rm -e SPRING_PROFILES_ACTIVE=seed inventory-service
+
+# PLAN.md Phase 10: a single conveyor-verifier pass, exits non-zero on any inside-out violation
+# (outside-in is diagnostic only — see OneShotRunner's Javadoc). Named invariant-check, not verify,
+# because `verify` already means `./mvnw verify` in this Makefile (PLAN.md's own Phase 10 wording,
+# "make verify for a one-shot run," collided with that — see CONTEXT.md's Key Decisions Log). Needs
+# the rest of the stack already up (`make up` first) — this spins up a separate one-shot container
+# alongside the always-on conveyor-verifier sidecar, it does not replace it.
+invariant-check:
+	docker compose run --rm -e SPRING_PROFILES_ACTIVE=oneshot conveyor-verifier

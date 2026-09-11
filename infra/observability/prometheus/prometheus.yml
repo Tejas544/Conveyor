@@ -35,3 +35,10 @@ scrape_configs:
     metrics_path: /actuator/prometheus
     static_configs:
       - targets: ["dispatch-service:8085"]
+
+  # PLAN.md Phase 10 — conveyor-invariant_violations_total's source (see alert-rules.yml's
+  # InvariantViolation rule, written in Phase 9 ahead of this metric existing).
+  - job_name: conveyor-verifier
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["conveyor-verifier:8086"]
