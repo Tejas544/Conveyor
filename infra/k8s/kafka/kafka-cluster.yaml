@@ -1,0 +1,61 @@
+# Strimzi 1.2.0 (infra/k8s/strimzi/), KRaft-only — ZooKeeper mode was removed upstream before this
+# version, so there is no ZK-vs-KRaft choice to make here, unlike when ARCHITECTURE.md §15 was
+# first written. Single dual-role (controller+broker) node, replicas: 1 — the direct K8s analogue
+# of docker-compose's single-broker Redpanda (`--smp=1`, ADR-2), not a production topology.
+# ARCHITECTURE.md §6.2: "Replication factor 1 locally, 3 in production" — this is the "locally" half.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: dual-role
+  namespace: conveyor
+  labels:
+    strimzi.io/cluster: conveyor-kafka
+spec:
+  replicas: 1
+  roles:
+    - controller
+    - broker
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 2Gi
+        deleteClaim: true
+        kraftMetadata: shared
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: conveyor-kafka
+  namespace: conveyor
+  annotations:
+    strimzi.io/node-pools: enabled
+    strimzi.io/kraft: enabled
+spec:
+  kafka:
+    version: 4.3.1
+    metadataVersion: 4.3-IV0
+    listeners:
+      # Plaintext, in-cluster only — ARCHITECTURE.md §12: "In-cluster traffic is plaintext; a
+      # service mesh is out of scope." Bootstrap service becomes conveyor-kafka-kafka-bootstrap:9092.
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}

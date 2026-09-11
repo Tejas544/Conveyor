@@ -1,0 +1,34 @@
+# PLAN.md Phase 13: "HPA dry run on kind — the Phase 15 method rehearsed locally." Only
+# order-service gets a real HPA here (CPU — the metric that needs nothing beyond metrics-server,
+# already installed by scripts/kind-up.sh). saga-orchestrator's custom-metric HPA
+# (conveyor_saga_active via prometheus-adapter) is deliberately left disabled in values.yaml — it
+# needs an in-cluster Prometheus this phase doesn't deploy — and is Phase 15's own deliverable, not
+# rehearsed here under the wrong metric as a stand-in.
+{{- $root := . -}}
+{{- range $svcName, $svc := .Values.services }}
+{{- if and $svc.hpa $svc.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $svcName }}
+  namespace: {{ $root.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $svcName }}
+    {{- include "conveyor.labels" $root | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $svcName }}
+  minReplicas: {{ $svc.hpa.minReplicas }}
+  maxReplicas: {{ $svc.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $svc.hpa.targetCPUUtilizationPercentage }}
+---
+{{- end }}
+{{- end }}

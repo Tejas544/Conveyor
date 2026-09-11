@@ -1,0 +1,92 @@
+# The deployed instance of infra/k8s/conveyor-verifier-cronjob.yaml's shape (written ahead of a
+# cluster existing, Phase 10) — same one-shot mode, schedule, and resource-sizing reasoning, now
+# templated against this chart's own values instead of a static placeholder image/namespace, and
+# with resources corrected from real Phase 12 data (see values.yaml's verifier.resources comment).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: conveyor-verifier
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: conveyor-verifier
+    {{- include "conveyor.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.verifier.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      # 45s (infra/k8s/conveyor-verifier-cronjob.yaml's original Phase-10 guess) was tuned for
+      # docker-compose's direct container networking; kind adds a real extra hop per REST call
+      # (kube-proxy/Calico) on every one of the outside-in mode's five calls, and this phase's own
+      # live session saw individual runs miss 45s under sustained host load (Job's own status
+      # condition: "Job was active longer than specified deadline") without the run itself being
+      # unhealthy otherwise -- 90s gives real headroom without masking a genuinely hung run.
+      activeDeadlineSeconds: 90
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: conveyor-verifier
+            {{- include "conveyor.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          securityContext:
+            fsGroup: 1000
+          containers:
+            - name: conveyor-verifier
+              image: "{{ .Values.image.repository }}/conveyor-verifier:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- include "conveyor.securityContext" . | nindent 16 }}
+              env:
+                - name: SPRING_PROFILES_ACTIVE
+                  value: oneshot
+                - name: DB_HOST
+                  value: postgres
+                {{- range $key, $db := .Values.postgres.databases }}
+                - name: {{ upper $key }}_DB_NAME
+                  value: {{ $db.name | quote }}
+                {{- end }}
+                - name: ORDER_SERVICE_BASE_URL
+                  value: "http://order-service:{{ (index .Values.services "order-service").port }}/api/v1"
+                - name: INVENTORY_SERVICE_BASE_URL
+                  value: "http://inventory-service:{{ (index .Values.services "inventory-service").port }}/api/v1"
+                - name: PAYMENT_SERVICE_BASE_URL
+                  value: "http://payment-service:{{ (index .Values.services "payment-service").port }}/api/v1"
+                - name: SAGA_SERVICE_BASE_URL
+                  value: "http://saga-orchestrator:{{ (index .Values.services "saga-orchestrator").port }}/api/v1"
+                - name: DISPATCH_SERVICE_BASE_URL
+                  value: "http://dispatch-service:{{ (index .Values.services "dispatch-service").port }}/api/v1"
+                - name: VERIFIER_DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: VERIFIER_DB_USER
+                - name: VERIFIER_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: VERIFIER_DB_PASSWORD
+                - name: MANAGEMENT_TRACING_SAMPLING_PROBABILITY
+                  value: {{ .Values.tracing.samplingProbability | quote }}
+                - name: MANAGEMENT_OTLP_TRACING_ENDPOINT
+                  value: {{ .Values.tracing.otlpEndpoint | quote }}
+              resources:
+                {{- toYaml .Values.verifier.resources | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                # ViolationReportWriter's file half (BUG-0024) — ephemeral here on purpose: each
+                # CronJob run is a fresh Pod, so a report file that doesn't outlive the container is
+                # no different from the sidecar shape's own file being overwritten every 10s; stdout
+                # (captured by `kubectl logs`) and the exported metric are the durable signal in this
+                # deployment shape either way.
+                - name: verifier-reports
+                  mountPath: /var/log/conveyor-verifier
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            - name: verifier-reports
+              emptyDir: {}

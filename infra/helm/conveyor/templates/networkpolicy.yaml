@@ -1,0 +1,62 @@
+# PLAN.md Phase 13: "NetworkPolicy restricting each service to its own datastore." Kubernetes
+# NetworkPolicy operates at the pod/label level, and ARCHITECTURE.md §4 puts all five services on
+# one shared Postgres instance (logical isolation via per-service roles/databases, not physical
+# separation) — so "restrict order-service to its own datastore" cannot be expressed at this layer
+# any finer than "restrict Postgres to the Conveyor app tier as a whole" (a NetworkPolicy has no
+# notion of "which database a connection will authenticate into"); true per-service database
+# segregation already exists, just enforced by Postgres's own roles/grants since Phase 2, not the
+# network layer. Mongo is different: it has two genuinely distinct consumers (inventory-service,
+# dispatch-service) and three services that have no business reaching it at all, which *is*
+# expressible here and is enforced for real below — a payment-service or saga-orchestrator pod
+# cannot open a connection to Mongo, full stop, not merely "wouldn't know what to do with one."
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-restrict-to-conveyor-services
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "conveyor.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: conveyor
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-restrict-to-inventory-and-dispatch
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "conveyor.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mongo
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: inventory-service
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dispatch-service
+        # templates/app/seed-job.yaml's one-shot inventory seeder — same catalog-write path
+        # inventory-service's own Mongo access exists for, just run once instead of continuously.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: conveyor-seed-inventory
+      ports:
+        - protocol: TCP
+          port: 27017
+{{- end }}

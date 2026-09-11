@@ -1,4 +1,4 @@
-.PHONY: up down logs build test verify seed reset ps observability-up observability-down invariant-check chaos-matrix load
+.PHONY: up down logs build test verify seed reset ps observability-up observability-down invariant-check chaos-matrix load kind-up kind-down
 
 up:
 	docker compose up -d --build
@@ -77,3 +77,11 @@ load:
 		-e SOAK_DURATION=$(SOAK_DURATION) \
 		grafana/k6 run /scripts/$(or $(SCENARIO),smoke).js \
 		--summary-export=/scripts/results/$(or $(SCENARIO),smoke)-summary.json
+
+# PLAN.md Phase 13: the whole system on a local kind cluster instead of docker-compose. Builds and
+# `kind load`s all six images itself — no registry involved (GHCR push is Phase 14). Idempotent.
+kind-up:
+	./scripts/kind-up.sh
+
+kind-down:
+	./scripts/kind-down.sh

@@ -1,0 +1,196 @@
+# infra/helm/conveyor/values.yaml — dev/demo defaults, deliberately mirroring docker-compose.yml's
+# and .env.example's own dev-only literals (ARCHITECTURE.md §12: these are demo credentials, not
+# secrets to protect; a real deployment overrides every *Password/*PEM value via -f a private
+# values file or --set, never commits one). CLAUDE.md §7: every Deployment below gets explicit
+# resources.requests/limits — required for Phase 15's autoscaling measurement to mean anything.
+
+namespace: conveyor
+
+image:
+  repository: conveyor
+  tag: local
+  pullPolicy: IfNotPresent
+
+kafka:
+  # Strimzi's generated bootstrap Service name (infra/k8s/kafka/kafka-cluster.yaml: Kafka
+  # metadata.name=conveyor-kafka -> "<name>-kafka-bootstrap"). Applied before this chart, not
+  # templated by it — an operator-owned resource shouldn't be torn down by an app `helm uninstall`.
+  bootstrapServers: conveyor-kafka-kafka-bootstrap:9092
+
+postgres:
+  image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+  storageSize: 2Gi
+  superuserPassword: postgres_local_dev_only
+  # ARCHITECTURE.md §4: one Postgres instance, one database + role per service. Keys here (order,
+  # inventory, payment, saga, dispatch) are looked up by each entry in `services` below.
+  databases:
+    order: {name: order_service, user: order_service, password: order_service_local_dev_only}
+    inventory: {name: inventory_service, user: inventory_service, password: inventory_service_local_dev_only}
+    payment: {name: payment_service, user: payment_service, password: payment_service_local_dev_only}
+    saga: {name: saga_orchestrator, user: saga_orchestrator, password: saga_orchestrator_local_dev_only}
+    dispatch: {name: dispatch_service, user: dispatch_service, password: dispatch_service_local_dev_only}
+  # ARCHITECTURE.md §12/Phase 10: SELECT-only across every schema, never an owning service's role.
+  verifier:
+    user: conveyor_verifier
+    password: verifier_local_dev_only
+
+mongo:
+  image: mongo:7@sha256:b096b4cb9269f3ebcf363be63f1c50920f786879d03a1890347a3bf33f1f0df0
+  storageSize: 2Gi
+  rootUsername: conveyor
+  rootPassword: mongo_local_dev_only
+
+jwt:
+  # ARCHITECTURE.md §12: "mounted Secret, never generated at startup." Empty here = every
+  # service's committed demo/dev keypair (conveyor-common's JwtSecurityProperties /
+  # order-service's JwtIssuerProperties) — fine for kind, never for anything beyond it.
+  publicKeyPem: ""
+  privateKeyPem: ""
+
+seed:
+  # PLAN.md Phase 2's `make seed`, as a Helm post-install/post-upgrade hook Job — same two
+  # one-shot containers `make seed` runs against compose, run once against the cluster so
+  # `helm install` alone leaves a demoable stack (accounts + ~50 catalog SKUs), not an empty one.
+  # Idempotent (Phase 2's own exit criterion), safe to leave on for every upgrade.
+  enabled: true
+  opsUsername: ops
+  opsPassword: ops_local_dev_only
+  adminUsername: admin
+  adminPassword: admin_local_dev_only
+
+tracing:
+  # Phase 9: tracing is always on regardless of whether a collector is listening (async,
+  # fire-and-forget — an unreachable OTLP endpoint just means spans are generated and
+  # MDC-enriched but never shipped). Prometheus/Grafana/Tempo are not part of this chart —
+  # they stay the docker-compose `--profile observability` stack's job; a real in-cluster
+  # collector is out of Phase 13's scope. This endpoint is therefore expected to 404/refuse
+  # on kind, by design, same as leaving the compose profile off.
+  samplingProbability: "1.0"
+  otlpEndpoint: "http://tempo.observability.svc.cluster.local:4318/v1/traces"
+
+chaos:
+  # ARCHITECTURE.md §14 / PLAN.md Phase 11 — unset by default, exactly like docker-compose.yml.
+  crashAt: ""
+  crashProbability: "1.0"
+  delayAt: ""
+
+# No Ingress controller (ingress-nginx et al.) is installed by scripts/kind-up.sh — nothing in
+# PLAN.md Phase 13's exit criteria needs one, and adding an unexercised dependency "for later" is
+# exactly the kind of scope this project's ground rules (CLAUDE.md §2) say not to add speculatively.
+# Services with `external: true` below are NodePort instead, at nodePort = port + 22000
+# (8081 -> 30081 etc.), matching infra/k8s/kind-config.yaml's extraPortMappings 1:1 so the
+# dashboard/e2e/k6 reach the cluster on the exact same published host ports docker-compose.yml
+# already uses (8081-8085) — no client-side config changes needed to point at kind instead of compose.
+
+networkPolicy:
+  enabled: true
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# One entry per app Deployment. `db` keys into postgres.databases above; `mongoDb`, when set, is
+# the Mongo database name this service connects to (only inventory-service and dispatch-service —
+# ARCHITECTURE.md §1's polyglot split). `port` matches each Dockerfile's EXPOSE / docker-compose.yml
+# published port (8081-8085), reused as-is for the container port and Service port.
+#
+# Resource requests/limits are grounded in RESULTS.md's Phase 12 measurements (`process_cpu_usage`,
+# fraction of the 12-core load-test host, sampled at the 120-160 VU peak — the highest load this
+# system has actually been driven at), not guessed:
+#   order-service       peak 38.9% (~4.7 cores abs., soak)  -> limits sized per-replica for HPA
+#                        to spread across, not one giant pod (that is the point of Phase 15's HPA)
+#   saga-orchestrator    peak  7.9% (~0.95 cores abs.)
+#   payment-service      peak  7.3% (~0.88 cores abs.)
+#   dispatch-service     peak  6.6% (~0.79 cores abs.)
+#   inventory-service    peak  4.1% (~0.49 cores abs.)
+# Memory limits are a reasoned default (JRE 21 + a small Spring context's heap), not directly
+# measured — RESULTS.md's Phase 12 section did not capture per-service heap, only conveyor-verifier's
+# (see verifier.resources below) — named here rather than presented as equally evidenced.
+services:
+  order-service:
+    port: 8081
+    db: order
+    mongoDb: ""
+    external: true
+    profiles: ""
+    jwtIssuer: true
+    replicaCount: 1
+    resources:
+      requests: {cpu: 400m, memory: 384Mi}
+      limits: {cpu: 2000m, memory: 768Mi}
+    hpa:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 60
+  inventory-service:
+    port: 8082
+    db: inventory
+    mongoDb: inventory_service
+    external: true
+    profiles: ""
+    jwtIssuer: false
+    replicaCount: 1
+    resources:
+      requests: {cpu: 100m, memory: 320Mi}
+      limits: {cpu: 750m, memory: 512Mi}
+    hpa:
+      enabled: false
+  payment-service:
+    port: 8083
+    db: payment
+    mongoDb: ""
+    # docker-compose.yml publishes this one too (BUG-0016): the dashboard's "make this one fail"
+    # control POSTs straight to payment-service's own /test/failure-mode, not through order-service
+    # or saga-orchestrator — so it has to be reachable the same way on kind. ChaosProfileStartupGuard
+    # still refuses `prod` alongside the `chaos` profile below regardless.
+    external: true
+    profiles: chaos
+    jwtIssuer: false
+    replicaCount: 1
+    resources:
+      requests: {cpu: 150m, memory: 320Mi}
+      limits: {cpu: 1000m, memory: 512Mi}
+    hpa:
+      enabled: false
+  saga-orchestrator:
+    port: 8084
+    db: saga
+    mongoDb: ""
+    external: true
+    profiles: ""
+    jwtIssuer: false
+    replicaCount: 1
+    resources:
+      requests: {cpu: 200m, memory: 384Mi}
+      limits: {cpu: 1000m, memory: 640Mi}
+    hpa:
+      # Phase 15 raises this to a custom-metric HPA on conveyor_saga_active via prometheus-adapter
+      # (ARCHITECTURE.md §15, PLAN.md Phase 15) — not available yet without an in-cluster Prometheus
+      # (out of Phase 13's scope, see tracing note above). Left disabled here rather than wired to
+      # CPU as a stand-in, so Phase 15 isn't silently "already done" under the wrong metric.
+      enabled: false
+  dispatch-service:
+    port: 8085
+    db: dispatch
+    mongoDb: dispatch_service
+    external: true
+    profiles: ""
+    jwtIssuer: false
+    replicaCount: 1
+    resources:
+      requests: {cpu: 150m, memory: 320Mi}
+      limits: {cpu: 1000m, memory: 512Mi}
+    hpa:
+      enabled: false
+
+# conveyor-verifier: a CronJob (infra/k8s/conveyor-verifier-cronjob.yaml's Phase-10-authored shape),
+# folded into this chart so `helm install` alone brings up the full system. Resources bumped from
+# that file's original 500m/512Mi limits: RESULTS.md's Phase 12 soak measured conveyor-verifier
+# itself peaking at 6.3% CPU (~0.76 cores) with heap grown to 453MB scanning an 88k-order dataset —
+# both above the Phase-10-guessed limits, now corrected with real data (CONTEXT.md Key Decisions Log).
+verifier:
+  schedule: "* * * * *"
+  resources:
+    requests: {cpu: 150m, memory: 384Mi}
+    limits: {cpu: 1000m, memory: 768Mi}

@@ -1,0 +1,115 @@
+# The Helm-hook equivalent of `make seed`'s two `docker compose run --rm -e
+# SPRING_PROFILES_ACTIVE=seed ...` one-shot containers (PLAN.md Phase 2, proven idempotent there) —
+# same images, same profile, just as post-install/post-upgrade Jobs instead of a manually-run
+# compose command, so `helm install` alone leaves a demoable cluster (accounts + ~50 catalog SKUs).
+# No explicit wait for Postgres/Kafka readiness: Helm hooks run after the chart's own StatefulSets/
+# Deployments are *created*, not necessarily *ready*, so backoffLimit gives Kubernetes' own Job
+# retry loop room to succeed once those dependencies actually are — the same "retry until the
+# infra catches up" posture docker-compose's `depends_on: condition: service_healthy` achieves by a
+# different mechanism.
+{{- if .Values.seed.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: conveyor-seed-order
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "conveyor.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: conveyor-seed-order
+        {{- include "conveyor.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: seed
+          image: "{{ .Values.image.repository }}/order-service:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "conveyor.securityContext" . | nindent 12 }}
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: seed
+            - name: DB_HOST
+              value: postgres
+            - name: DB_NAME
+              value: {{ .Values.postgres.databases.order.name | quote }}
+            - name: DB_USERNAME
+              value: {{ .Values.postgres.databases.order.user | quote }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: postgres-credentials, key: ORDER_DB_PASSWORD}
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ .Values.kafka.bootstrapServers | quote }}
+            - name: SEED_OPS_USERNAME
+              value: {{ .Values.seed.opsUsername | quote }}
+            - name: SEED_OPS_PASSWORD
+              value: {{ .Values.seed.opsPassword | quote }}
+            - name: SEED_ADMIN_USERNAME
+              value: {{ .Values.seed.adminUsername | quote }}
+            - name: SEED_ADMIN_PASSWORD
+              value: {{ .Values.seed.adminPassword | quote }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: conveyor-seed-inventory
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "conveyor.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: conveyor-seed-inventory
+        {{- include "conveyor.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: seed
+          image: "{{ .Values.image.repository }}/inventory-service:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "conveyor.securityContext" . | nindent 12 }}
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: seed
+            - name: DB_HOST
+              value: postgres
+            - name: DB_NAME
+              value: {{ .Values.postgres.databases.inventory.name | quote }}
+            - name: DB_USERNAME
+              value: {{ .Values.postgres.databases.inventory.user | quote }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: postgres-credentials, key: INVENTORY_DB_PASSWORD}
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef: {name: app-secrets, key: MONGO_URI_INVENTORY_SERVICE}
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ .Values.kafka.bootstrapServers | quote }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+{{- end }}

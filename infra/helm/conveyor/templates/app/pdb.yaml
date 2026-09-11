@@ -1,0 +1,19 @@
+{{- $root := . -}}
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- range $svcName, $svc := .Values.services }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $svcName }}
+  namespace: {{ $root.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $svcName }}
+    {{- include "conveyor.labels" $root | nindent 4 }}
+spec:
+  minAvailable: {{ $root.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $svcName }}
+---
+{{- end }}
+{{- end }}

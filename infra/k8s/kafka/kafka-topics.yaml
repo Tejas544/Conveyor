@@ -1,0 +1,88 @@
+# ARCHITECTURE.md §6.2's table, one KafkaTopic CR per row (the Strimzi Topic Operator, enabled on
+# the Kafka CR in kafka-cluster.yaml, reconciles these directly) plus the DLQ topic dispatch-service's
+# retry-then-DLQ handler publishes to (Phase 7, BUGS.md — not in §6.2's table since it was added
+# after that table was written). 6 partitions everywhere (§6.2: "so consumer-group scaling up to six
+# instances is demonstrable — relevant to the autoscaling phase"), replication factor 1 locally.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: conveyor-order-events-v1
+  namespace: conveyor
+  labels:
+    strimzi.io/cluster: conveyor-kafka
+spec:
+  topicName: conveyor.order.events.v1
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: 604800000
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: conveyor-order-events-v1-dlq
+  namespace: conveyor
+  labels:
+    strimzi.io/cluster: conveyor-kafka
+spec:
+  topicName: conveyor.order.events.v1.dlq
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: 604800000
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: conveyor-inventory-commands-v1
+  namespace: conveyor
+  labels:
+    strimzi.io/cluster: conveyor-kafka
+spec:
+  topicName: conveyor.inventory.commands.v1
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: 604800000
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: conveyor-payment-commands-v1
+  namespace: conveyor
+  labels:
+    strimzi.io/cluster: conveyor-kafka
+spec:
+  topicName: conveyor.payment.commands.v1
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: 604800000
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: conveyor-saga-replies-v1
+  namespace: conveyor
+  labels:
+    strimzi.io/cluster: conveyor-kafka
+spec:
+  topicName: conveyor.saga.replies.v1
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: 604800000
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: conveyor-dispatch-events-v1
+  namespace: conveyor
+  labels:
+    strimzi.io/cluster: conveyor-kafka
+spec:
+  topicName: conveyor.dispatch.events.v1
+  partitions: 6
+  replicas: 1
+  config:
+    retention.ms: 604800000

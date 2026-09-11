@@ -1,0 +1,39 @@
+# One control-plane + two workers, not a single all-in-one node — cheap to do now and reused
+# as-is by Phase 15 (PLAN.md: "a multi-node k3d cluster... to force real scheduling decisions
+# rather than everything fitting on one node"). kind, not k3d, chosen for Phase 13 specifically
+# because it is Docker-native (no extra host networking layer) and this machine already has no
+# host k3d/kind either way; Phase 15 can swap the tool without changing anything this manifest
+# or the Helm chart depend on, since both speak plain Kubernetes.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: conveyor
+# kind's default CNI (kindnetd) does not enforce NetworkPolicy at all — every policy in
+# infra/helm/conveyor/templates/networkpolicy.yaml would silently be decorative on it. Calico
+# (infra/k8s/calico/, applied by scripts/kind-up.sh right after cluster creation) replaces it and
+# does enforce. podSubnet must match Calico's own default CALICO_IPV4POOL_CIDR (also set explicitly
+# in infra/k8s/calico/calico.yaml) rather than kind's own default 10.244.0.0/16.
+networking:
+  disableDefaultCNI: true
+  podSubnet: "192.168.0.0/16"
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # Published so the dashboard/e2e/k6 can reach in-cluster services the same way
+      # docker-compose.yml's published ports already do, without needing a LoadBalancer.
+      - containerPort: 30081
+        hostPort: 8081
+        protocol: TCP
+      - containerPort: 30082
+        hostPort: 8082
+        protocol: TCP
+      - containerPort: 30083
+        hostPort: 8083
+        protocol: TCP
+      - containerPort: 30084
+        hostPort: 8084
+        protocol: TCP
+      - containerPort: 30085
+        hostPort: 8085
+        protocol: TCP
+  - role: worker
+  - role: worker

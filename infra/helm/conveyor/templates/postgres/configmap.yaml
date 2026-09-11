@@ -1,0 +1,13 @@
+# Reuses infra/postgres/init-service-databases.sh verbatim (Helm's .Files.Get reads it straight
+# out of the chart directory at render time) — one script, driven entirely by env vars, already
+# proven idempotent by docker-compose since Phase 2. No k8s-specific fork needed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "conveyor.labels" . | nindent 4 }}
+data:
+  init-service-databases.sh: |-
+{{ .Files.Get "files/init-service-databases.sh" | indent 4 }}

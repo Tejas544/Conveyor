@@ -1,0 +1,12 @@
+apiVersion: v2
+name: conveyor
+description: >-
+  Conveyor — cloud-native order fulfillment platform. One values-driven chart for
+  the six app services (order/inventory/payment/saga/dispatch/verifier) plus the
+  Postgres and MongoDB datastores. Kafka is Strimzi-operator-managed, applied
+  separately (infra/k8s/kafka/) before this chart, same reasoning as any other
+  operator-owned resource not being bundled into an app release. See PLAN.md
+  Phase 13 and ARCHITECTURE.md §15.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
