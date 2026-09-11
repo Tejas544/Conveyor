@@ -728,7 +728,7 @@ regression test; full detail in `BUGS.md`.
 
 ---
 
-## Phase 14 — CI/CD and deployment · **L** · *rescoped to $0 by ADR-13*
+## Phase 14 — CI/CD and deployment · **L** · *rescoped to $0 by ADR-13* · ✅ Complete (2026-09-11)
 
 **Goal.** `git push` → tested, containerized, pushed to a free registry,
 deployed to a real (if ephemeral) Kubernetes cluster and a real public
@@ -761,22 +761,41 @@ The AWS fallback (§15.4) remains gated exactly as originally specified
 as part of this phase unless the human separately asks for it.
 
 **Exit criteria.**
-- [ ] Pipeline green end to end on a real push: build → test → containerize →
-      GHCR → deploy to a freshly created kind cluster.
-- [ ] The deployed-in-CI system serves a real order end to end via the smoke
+- [x] Pipeline green end to end on a real push: build → test → containerize →
+      GHCR → deploy to a freshly created kind cluster. Verified live
+      (2026-09-11): `deploy-to-kind` job, run 34618678320, all 15 jobs green —
+      https://github.com/Tejas544/Conveyor/actions/runs/34618678320.
+- [x] The deployed-in-CI system serves a real order end to end via the smoke
       test; the frontend on Vercel/Pages shows the same system live when
-      pointed at a locally or CI-run cluster.
-- [ ] The invariant checker runs in-cluster and reports clean.
-- [ ] A deliberately broken commit **fails the pipeline** and is not deployed —
-      the gate is proven, not assumed.
-- [ ] `terraform validate` and `terraform plan` are green in CI;
+      pointed at a locally or CI-run cluster. `KindE2ESmokeTest` (all 3
+      scenarios) green against the CI-created cluster's NodePorts; GitHub Pages
+      chosen over Vercel/Cloudflare (no new account/secret needed — see
+      Key Decisions Log) — live at https://tejas544.github.io/Conveyor/,
+      confirmed rendering via the browser tool.
+- [x] The invariant checker runs in-cluster and reports clean.
+      `deploy-to-kind`'s on-demand trigger of the chart's own `conveyor-verifier`
+      CronJob reported clean in the same live run above.
+- [x] A deliberately broken commit **fails the pipeline** and is not deployed —
+      the gate is proven, not assumed. Live-verified (2026-09-11, commit
+      `b86671a`, run 34622222213): `build-and-test`/`kafka-compat` failed on a
+      deliberately inverted assertion, `e2e`/`invariant-check`/
+      `containerize-and-push`/`deploy-to-kind` all correctly `skipped`, overall
+      run conclusion `failure`. Reverted immediately (`8751613`); the next run
+      returned to green.
+- [x] `terraform validate` and `terraform plan` are green in CI;
       **`terraform apply` is confirmed absent from every automated path** (grep
-      the workflow files as part of this check).
-- [ ] `docs/DEPLOYMENT.md` accurately describes a $0 path that a reader could
+      the workflow files as part of this check). `terraform-plan` and
+      `verify-no-terraform-apply` jobs both green; `plan` runs against dummy
+      AWS credentials with no real account reachable at all (see
+      `infra/terraform/README.md`).
+- [x] `docs/DEPLOYMENT.md` accurately describes a $0 path that a reader could
       follow with no AWS account at all.
-- [ ] Nothing billable exists anywhere as a result of this phase — there is
+- [x] Nothing billable exists anywhere as a result of this phase — there is
       nothing to tear down, and that absence is itself verified rather than
-      assumed.
+      assumed. GHCR/GitHub Actions/GitHub Pages are all free for this public
+      repo; the ephemeral kind cluster is torn down (`if: always()`) at the end
+      of every `deploy-to-kind` run regardless of outcome; `terraform apply`
+      never ran (verified above), so no AWS resource was ever created.
 
 ---
 

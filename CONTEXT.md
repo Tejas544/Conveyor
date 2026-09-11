@@ -1,12 +1,12 @@
-# Context — Last updated: 2026-09-11 (Phase 13 complete)
+# Context — Last updated: 2026-09-11 (Phase 14 complete)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 14 — CI/CD and deployment (not started).** Phase 13 closed this
-session, human sign-off received to proceed ("Start Phase 13 — go ahead as
+**Phase 15 — Autoscaling measurement (not started).** Phase 14 closed this
+session, human instruction to proceed ("Start Phase 14 — go ahead as
 planned").
 
 ## Completed Phases
@@ -467,8 +467,82 @@ planned").
   until it settled. Same underlying lesson as the existing docker-compose-vs-verify note below, now
   with kind added to the "don't run a heavy Testcontainers reactor at the same time" list.
 
+- Phase 14 — CI/CD and deployment ✅ (2026-09-11). **The single biggest finding of this phase came
+  before any new work started**: `gh run list` showed every one of the four GitHub Actions runs this
+  repo had ever triggered (Phase 9/11/12/13's close-out pushes) as `failure` — CI had never once gone
+  green, silently contradicting Phase 1's own exit criterion and every later phase's implicit
+  assumption of a healthy pipeline. Root cause: `./mvnw` was committed without its executable bit
+  (BUG-0037) — invisible on this Windows dev machine, fatal on the POSIX runner. Fixing that let CI
+  run far enough, for the first time ever, to surface **eight more real, previously-invisible bugs**
+  in rapid succession, each fixed immediately before building anything new on top of an unproven
+  pipeline: the Trivy action pinned without its `v` tag prefix (**BUG-0038**, then repeated and
+  re-fixed as **BUG-0043** minutes later in this same session), every other shell script in the repo
+  sharing BUG-0037's missing-executable-bit defect (**BUG-0041**), the `e2e` module's Spotless check
+  never having run in CI at all (**BUG-0039** — that module is excluded from the root reactor's
+  default `verify`, so its own formatting compliance was unchecked the entire project), the
+  `invariant-check` job racing its own containers' startup (`docker compose up -d --build --wait`
+  fixed it — **BUG-0040**), `npm ci` failing on a peer-dependency conflict `npm install` had always
+  tolerated silently (**BUG-0042**, `frontend/.npmrc`'s `legacy-peer-deps=true`), one transient
+  connection failure under genuine multi-JVM resource contention on a shared runner tolerated with a
+  bounded retry rather than treated as a defect (**BUG-0044**), and — the most consequential —
+  MongoDB's `livenessProbe` killing it mid first-time root-user creation on a freshly-provisioned kind
+  PV under CI load, permanently breaking auth for the rest of the deployment (**BUG-0045**,
+  `initialDelaySeconds` added to both Mongo probes). All nine bugs are logged in `BUGS.md` with full
+  root-cause detail; CLAUDE.md §2.7's "log every bug the moment it's found, including ones fixed in
+  the same breath" was followed literally, one entry at a time, as each was found live.
+  <br>**New pipeline** (`.github/workflows/build.yml`): `containerize-and-push` (a 6-image matrix,
+  GHCR, commit-SHA + `latest` tags, `--provenance=false` + fixed `SOURCE_DATE_EPOCH` for the same
+  reproducibility reasons as Phase 13, per-image Trivy scan as its own gate) → `deploy-to-kind`
+  (re-derives the full Phase 13 cluster shape from scratch inside the runner — Calico, metrics-server,
+  Strimzi, Kafka — then pulls the just-pushed GHCR images via a `docker-registry` Secret built from
+  the job's own `GITHUB_TOKEN`, `helm install`s, runs Phase 13's own `KindE2ESmokeTest` as the smoke
+  test, triggers the chart's `conveyor-verifier` CronJob on demand as the invariant-check deployment
+  gate, tears the cluster down `if: always()`). Both gated to `push` on `main` only (never a PR, so a
+  fork can't spend this repo's `GITHUB_TOKEN`), and gated on every existing test job passing first.
+  Added a `concurrency` group so a newer push cancels an older commit's still-running build instead of
+  letting several queue up in parallel, as happened live during this session's own rapid-fix cadence.
+  <br>**Terraform** (`infra/terraform/`): VPC (no NAT Gateway — public-subnet nodes with restrictive
+  SGs per ARCHITECTURE.md §15.4), EKS (+OIDC provider for IRSA), RDS Postgres, ECR (6 repos, 10-image
+  retention), and an IRSA role for the AWS Load Balancer Controller (deliberately inert placeholder
+  policy — see Key Decisions Log). `terraform-plan` (fmt/validate/plan) and `verify-no-terraform-apply`
+  (greps every workflow file, excluding comment lines, for an actual `terraform apply` invocation) both
+  green in CI. **Verified locally that `plan` genuinely runs against dummy credentials with no real AWS
+  account reachable at all** — `terraform plan` computed a real 37-resource create-only diff using
+  literally made-up `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` values, offline.
+  <br>**Frontend**: GitHub Pages chosen over Vercel/Cloudflare Pages (human's explicit pick — no new
+  account or repo secret needed, just this repo's own `GITHUB_TOKEN`; see Key Decisions Log) — live at
+  https://tejas544.github.io/Conveyor/, confirmed rendering via the browser tool. Required two real,
+  bounded additions: a build-time per-service API base URL (`VITE_ORDER_API_URL` etc., `frontend/src/
+  api/config.ts`, defaulting to `''` so every existing deployment shape's relative-path behavior is
+  unchanged) so the same static build can target any backend origin, and a new `CorsConfigurationSource`
+  in `conveyor-common`'s `SecurityAutoConfiguration` (`conveyor.security.cors.allowed-origins`, empty/
+  no-op by default) so a cross-origin browser call is legal at all. `docker-compose.yml` and
+  `values.yaml` both default the allowed origin to the project's own Pages URL, so `make up`/
+  `make kind-up` alone already leave a stack that URL can reach with no extra flags.
+  <br>**`docs/DEPLOYMENT.md`** ties the $0 path and the AWS fallback together, including a named,
+  not-glossed-over limitation: the refresh-token cookie is `SameSite=Strict` (ADR-5, deliberately, so
+  XSS can't read it), which means it never attaches to a cross-origin request regardless of CORS or
+  HTTPS — the Pages-hosted dashboard works normally for one access-token lifetime (15 min) but the
+  automatic silent-refresh will fail and the user has to log in again, rather than the session
+  persisting indefinitely. `infra/teardown.sh` (new) and two Makefile targets (`teardown`, `cost-check`)
+  round out ARCHITECTURE.md §15.3's local-hygiene story, which had never actually been built despite
+  being named since Phase 0.
+  <br>**The "deliberately broken commit" exit criterion was proven live, not assumed**: a temporary
+  commit (`b86671a`) inverted one fast unit-test assertion (`ConveyorEnvelopeSerializationTest`),
+  pushed alone. Live result (run 34622222213): `build-and-test`/`kafka-compat` failed as expected,
+  and — the actual point of the exercise — `e2e`/`invariant-check`/`containerize-and-push`/
+  `deploy-to-kind` all came back `skipped`, and the overall run concluded `failure`. Reverted
+  immediately (`8751613`); the very next push returned to a fully green 15-job run.
+  <br>**Final verified state**: run 34618678320 — all 15 jobs green, including `deploy-to-kind`
+  (fresh kind cluster, GHCR images pulled and deployed, `KindE2ESmokeTest`'s all 3 scenarios passing
+  against it, the in-cluster invariant-check gate reporting clean). GitHub Pages enabled on the repo
+  (`gh api -X POST repos/.../pages -f build_type=workflow`) and confirmed live via the browser tool.
+  Nothing billable exists: this is a public repo (unlimited free Actions minutes and free GHCR/Pages),
+  the kind cluster is destroyed at the end of every run regardless of outcome, and `terraform apply`
+  never ran anywhere (grep-verified in CI on every push).
+
 ## In Progress
-- **Nothing mid-flight.** Phase 13 closed cleanly this session. Phase 14 (CI/CD and deployment) has
+- **Nothing mid-flight.** Phase 14 closed cleanly this session. Phase 15 (autoscaling measurement) has
   not started.
 
 ## Blockers
@@ -483,24 +557,29 @@ planned").
   connecting from the host shell via a bare `psql -h localhost -p 5432` does
   not.
 - **Environment note (this machine):** running a live `docker compose
-  --profile observability up` stack, **or a live kind cluster (new this
-  phase)**, *at the same time* as `./mvnw verify` starves the
-  Testcontainers-heavy Surefire forks (and, for kind, the cluster's own
-  control-plane responsiveness) badly enough to cause real problems — always
-  tear down any live compose stack or kind cluster before a full `verify` run
-  here, or budget real settling time afterward if you don't.
+  --profile observability up` stack, **or a live kind cluster**, *at the same
+  time* as `./mvnw verify` starves the Testcontainers-heavy Surefire forks
+  (and, for kind, the cluster's own control-plane responsiveness) badly enough
+  to cause real problems — always tear down any live compose stack or kind
+  cluster before a full `verify` run here, or budget real settling time
+  afterward if you don't.
+- **GitHub-hosted CI runners are measurably more resource-constrained than
+  this project's usual 12-core local dev host for the full-stack jobs (Phase
+  14, new).** `invariant-check` needed a bounded retry (BUG-0044) and Mongo's
+  StatefulSet needed real liveness-probe headroom (BUG-0045) specifically
+  because nine JVMs plus Kafka/Mongo/Postgres all starting within about two
+  minutes is genuinely heavier concurrent load than local runs have ever
+  exercised. Worth remembering before tightening any timeout further in CI.
 
 ## Next Steps
-1. **Phase 14 — CI/CD and deployment.** `git push` → build → test → containerize
-   → GHCR → fresh kind cluster inside the GitHub Actions runner → `helm install`
-   → smoke test → invariant-check gate; Terraform for the AWS fallback path
-   written and `plan`-validated only, never `apply`'d (ADR-13). A natural first
-   candidate once Phase 13's Helm chart is CI-exercised: raise
-   `SagaReplyListener`'s listener `concurrency` above Spring Kafka's default of
-   1 and re-run Phase 12's ramp scenario to confirm the knee moves — Phase 12
-   named and trace-evidenced the bottleneck but deliberately did not apply the
-   fix speculatively mid-rigor-phase (see RESULTS.md's Phase 12 section);
-   Phase 13 didn't either, for the same reason.
+1. **Phase 15 — Autoscaling measurement.** HPA on `saga-orchestrator` (custom
+   metric via prometheus-adapter) and `order-service` (CPU) on a multi-node k3d
+   cluster; scale-up latency decomposition. A natural first candidate before or
+   during it: raise `SagaReplyListener`'s listener `concurrency` above Spring
+   Kafka's default of 1 and re-run Phase 12's ramp scenario to confirm the knee
+   moves — Phase 12 named and trace-evidenced the bottleneck but deliberately
+   did not apply the fix speculatively mid-rigor-phase (see RESULTS.md's
+   Phase 12 section); neither Phase 13 nor 14 did either, for the same reason.
 2. Consider revisiting `chaos/run_matrix.py`'s inter-repetition pacing for
    the same injection point (BUG-0025's remaining, accepted limitation — see
    RESULTS.md's "harness pacing limitation" note) if the chaos matrix is ever
@@ -535,6 +614,68 @@ planned").
 
 ## Key Decisions Log
 
+- **Phase 14 — GitHub Pages, not Vercel/Cloudflare Pages, for the frontend pipeline.** All three are
+  named as equally valid in ARCHITECTURE.md §15.2; asked directly, the human picked GitHub Pages
+  specifically because it needs no new account and no repo secret — the workflow authenticates with
+  this repo's own `GITHUB_TOKEN`, the same credential every other job already has. The one thing this
+  costs: automatic silent token refresh doesn't survive the pairing (see the CORS/SameSite limitation
+  entry below), a tradeoff named in `docs/DEPLOYMENT.md` rather than hidden.
+- **Phase 14 — GHCR images stay private, reached via a per-job pull Secret, rather than made public.**
+  ARCHITECTURE.md §15.3's table calls GHCR "free, unlimited for public images," which reads as an
+  argument for public images — but `deploy-to-kind` needs no public visibility to work (it builds its
+  own `docker-registry` Secret from the same `GITHUB_TOKEN` that pushed the images one job earlier),
+  and public images are also free for a public repo regardless of package visibility. Keeping them
+  private by default is simply less surface area exposed for zero benefit to this specific pipeline;
+  a human wanting to `docker pull` one independently can flip visibility in the repo's Package
+  settings, documented as an option rather than done by default.
+- **Phase 14 — cross-origin CORS support closes only part of the gap; the refresh-token cookie's
+  `SameSite=Strict` (ADR-5) is left exactly as it was, not loosened.** A statically-hosted frontend
+  calling a different-origin backend is cross-origin by construction, and `SameSite=Strict` means the
+  browser never attaches that cookie to a cross-origin request at all — no CORS header or HTTPS
+  changes that. Loosening it to `SameSite=None; Secure` would need real TLS in front of the $0 path's
+  local kind/compose stacks, which is exactly the kind of infrastructure ADR-13 exists to avoid adding.
+  Resolution: ship the CORS support that makes the *rest* of the flow (login, place orders, poll
+  status, the SSE stream — none of which depend on the cookie) work cross-origin for real, and name the
+  one specific consequence (silent token refresh fails; the user re-logs in) plainly in
+  `docs/DEPLOYMENT.md` rather than silently shipping degraded behavior or overclaiming full parity.
+- **Phase 14 — `deploy-to-kind` re-derives the kind cluster from scratch in the CI job rather than
+  reusing `scripts/kind-up.sh` verbatim.** That script's own comment says it builds and `kind load`s
+  local images with no registry involved "GHCR push is Phase 14" — this job's entire point is proving
+  the images that just landed in GHCR are the ones actually running, which needs a pull path
+  (an image-pull Secret + `helm --set image.repository=ghcr.io/...`), not a local build-and-load path.
+  Retrofitting a registry-vs-local-build conditional into the existing, already-correct local script
+  was judged riskier than a parallel sequence of the same `kubectl apply` steps in the workflow itself
+  — the same "new parallel path over retrofitted conditional logic" call this project already made for
+  `KindE2ESmokeTest` vs. the compose-based E2E suite in Phase 13.
+  <br>**A second, unplanned but real finding fell out of running this for the first time**: MongoDB's
+  StatefulSet liveness probe (no `initialDelaySeconds` at all since Phase 13 first wrote it) had never
+  been exercised against a cold, freshly-provisioned dynamic PV under genuine multi-JVM CI contention
+  before — only ever against a warm local host where first-boot finishes fast enough regardless. Fixed
+  live (BUG-0045) the moment `deploy-to-kind` actually ran the chart against a brand-new cluster for
+  the first time; the local `make kind-up` path was never at risk since local Mongo first-boot has
+  always finished well inside the old, too-tight window.
+- **Phase 14 — Terraform's AWS Load Balancer Controller IRSA role ships with a deliberately inert
+  `Deny: *` placeholder policy, not the real upstream policy JSON.** The controller's actual IAM
+  policy is long-lived and versioned independently on AWS's own release cadence; hand-copying it into
+  this repo would silently drift out of date the moment AWS changes it, with no mechanism here to
+  notice. `terraform validate`/`plan` only need to confirm the *wiring* (role, OIDC trust condition,
+  attachment) is structurally correct, which a placeholder proves just as well as the real policy
+  would — `infra/terraform/README.md` documents fetching the real one from AWS's own docs at the
+  point of any real `apply`, which never happens automatically anyway (ADR-13).
+- **Phase 14 — `invariant-check`'s one transient CI failure (BUG-0044) was fixed with a bounded retry,
+  not a longer fixed sleep.** The main `order-service` container was already confirmed healthy by
+  `docker compose up --wait` and never restarted before the failure — this was runner-load noise, not
+  a repeatable race with a fixed root cause to wait out. A retry costs nothing when the first attempt
+  already succeeds (the common case, confirmed on the very next run) and only pays a real time cost on
+  the rarer contended run, which a fixed longer sleep would pay on every single run regardless.
+- **Phase 14 — nine real, previously-invisible bugs (BUG-0037 through BUG-0045) were fixed immediately,
+  each in its own commit, before any new Phase 14 feature was built on top of an unproven pipeline.**
+  Consistent with `CLAUDE.md` §2.7 and this project's own established practice (Phase 11's BUG-0026/27,
+  Phase 13's BUG-0036): a phase whose entire subject is "is the pipeline actually trustworthy" cannot
+  honestly report success while silently working around gaps in that same pipeline. `BUG-0038` and
+  `BUG-0043` are the same exact mistake (missing `v` prefix on the Trivy action tag) made twice in one
+  session — logged as two separate entries rather than folded together, since the bug log's value is
+  in showing what actually happened, including a lesson not fully internalized the first time.
 - **Phase 13 — Calico replaces kind's default CNI (kindnetd).** `NetworkPolicy` is a named PLAN.md
   deliverable, but kindnetd does not enforce `NetworkPolicy` at all — every policy in
   `infra/helm/conveyor/templates/networkpolicy.yaml` would have been silently decorative on it.
