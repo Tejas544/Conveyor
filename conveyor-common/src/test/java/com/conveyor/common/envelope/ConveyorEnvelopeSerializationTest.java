@@ -32,10 +32,7 @@ class ConveyorEnvelopeSerializationTest {
     ConveyorEnvelope<Map<String, Object>> roundTripped =
         objectMapper.readValue(json, new EnvelopeMapPayloadTypeRef());
 
-    // PLAN.md Phase 14 exit criterion: "a deliberately broken commit fails the pipeline and is not
-    // deployed." Intentionally false assertion, pushed on its own to observe build-and-test fail
-    // and containerize-and-push/deploy-to-kind never run, then reverted immediately.
-    assertThat(roundTripped).isNotEqualTo(original);
+    assertThat(roundTripped).isEqualTo(original);
   }
 
   @Test
