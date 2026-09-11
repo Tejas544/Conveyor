@@ -20,6 +20,17 @@ Format for each entry:
 
 ---
 
+## [BUG-0043] Trivy action re-pinned without its `v` tag prefix a second time, in the exact same file, in the exact same session
+- **Date:** 2026-09-11
+- **Phase:** Phase 14 — CI/CD and deployment (found live on the very next real CI run after BUG-0038's own fix)
+- **Severity:** Low
+- **Symptom:** `security-scan` (and the new per-image scan added in `containerize-and-push`) fail with the identical `Unable to resolve action 'aquasecurity/trivy-action@0.36.0', unable to find version '0.36.0'` error BUG-0038 already diagnosed — this time self-inflicted, by writing `@0.36.0` again instead of `@v0.36.0` when bumping the pin.
+- **Root cause:** Plain human/assistant error repeating BUG-0038's exact lesson within the same session — worth logging as its own entry rather than silently folding into BUG-0038, since the bug log's value is in showing what actually happened, including a mistake repeated right after it was first found.
+- **Fix:** `sed -i 's/trivy-action@0\.36\.0/trivy-action@v0.36.0/g'` across both occurrences in `build.yml`.
+- **Status:** Fixed
+
+---
+
 ## [BUG-0042] `npm ci` fails on a peer-dependency conflict `npm install` had always silently tolerated
 - **Date:** 2026-09-11
 - **Phase:** Phase 14 — CI/CD and deployment (found the moment the first-ever frontend CI job ran `npm ci` against this lockfile)
