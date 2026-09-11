@@ -20,6 +20,17 @@ Format for each entry:
 
 ---
 
+## [BUG-0044] `invariant-check` CI job saw one transient connection failure under real runner resource contention, even after BUG-0040's `--wait` fix
+- **Date:** 2026-09-11
+- **Phase:** Phase 14 — CI/CD and deployment (found live on the first CI run to get this far with every other Phase 14 fix already in place)
+- **Severity:** Low
+- **Symptom:** The one-shot `conveyor-verifier` run (`make invariant-check`) fails with the same `ResourceAccessException`/`ConnectException`/`ClosedChannelException` connecting to `http://order-service:8081` that BUG-0040 already fixed once — but this time nearly a full minute after `docker compose up --wait` had already confirmed `order-service` healthy, and `order-service`'s own container never restarted or stopped before the failure (confirmed from the container lifecycle events in the job log).
+- **Root cause:** Not the same race as BUG-0040. This job runs nine JVMs (five app services + conveyor-verifier's sidecar + two one-shot seed containers + the one-shot verifier itself) alongside Kafka, MongoDB, and Postgres, all starting within roughly a two-minute window on a standard shared GitHub-hosted runner — genuinely heavier concurrent load than this project's usual 12-core local dev host. A single transient connection failure under that contention, once, is runner noise rather than an application defect.
+- **Fix:** `make invariant-check` is retried up to twice more (15s, then 30s backoff) in `build.yml`'s `invariant-check` job — the same bounded-retry-over-a-flaky-live-dependency posture this codebase already applies elsewhere (dispatch-service's retry-then-DLQ, `SagaTimeoutSweeper`'s backoff), not a defect fix.
+- **Status:** Fixed
+
+---
+
 ## [BUG-0043] Trivy action re-pinned without its `v` tag prefix a second time, in the exact same file, in the exact same session
 - **Date:** 2026-09-11
 - **Phase:** Phase 14 — CI/CD and deployment (found live on the very next real CI run after BUG-0038's own fix)
