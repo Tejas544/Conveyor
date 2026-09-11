@@ -20,6 +20,129 @@ Format for each entry:
 
 ---
 
+## [BUG-0024] `ViolationReportWriter` silently failed every write live: the report volume's mountpoint was root-owned, the container runs as a non-root user
+- **Date:** 2026-09-11
+- **Phase:** Phase 10 — `conveyor-verifier` (live-compose verification)
+- **Severity:** Medium — the checker itself still ran and reported correctly to stdout/logs and
+  Prometheus; only the file artifact (`latest-report.json`/`violations.jsonl`) PLAN.md's own
+  deliverable names ("writes a violation report ... to a file and to stdout") was silently broken.
+  Caught by actually running `make invariant-check`'s equivalent live and reading its own log
+  output, not assumed to work because the stdout/metrics half did.
+- **Symptom:** `docker compose run --rm -e SPRING_PROFILES_ACTIVE=oneshot conveyor-verifier` logged
+  a correct clean-run summary, immediately followed by `ERROR ... Failed to write violation report
+  to /var/log/conveyor-verifier` / `java.nio.file.AccessDeniedException:
+  /var/log/conveyor-verifier/latest-report.json`.
+- **Root cause:** the Dockerfile's final stage runs as a non-root `conveyor` user (this project's
+  standard hardening posture, `CLAUDE.md` §7), but never created `/var/log/conveyor-verifier` before
+  switching users. `docker-compose.yml` mounts a named volume (`verifier-reports`) at that path;
+  Docker seeds a *newly created* named volume's initial content and ownership from whatever already
+  exists at that path inside the image at container-start time — since nothing did, Docker created
+  the mountpoint owned by `root`, which the `conveyor` user cannot write to.
+- **Fix:** `RUN mkdir -p /var/log/conveyor-verifier && chown -R conveyor:conveyor
+  /var/log/conveyor-verifier` added before `USER conveyor:conveyor` in `conveyor-verifier/Dockerfile`.
+  The already-existing (wrongly-owned) volume from this session's earlier runs also had to be
+  removed (`docker volume rm conveyor_verifier-reports`) — rebuilding the image alone does not fix
+  ownership retroactively on a volume Docker already initialized once.
+- **Status:** Fixed. Re-verified live: a subsequent one-shot run wrote both
+  `/var/log/conveyor-verifier/latest-report.json` inside the container with no error.
+
+---
+
+## [BUG-0022] `conveyor-verifier` crash-looped on every live start: `ServiceClients` was `@Configuration` with two constructors, and CGLIB proxying broke bean instantiation
+- **Date:** 2026-09-11
+- **Phase:** Phase 10 — `conveyor-verifier` (live-compose verification)
+- **Severity:** High — the entire service crash-looped under `docker compose up`; caught immediately
+  by this phase's own "runs continuously under `docker compose up`" exit criterion, before being
+  reported done, but after every Testcontainers/mocked-HTTP unit test had already passed (none of
+  them go through a real Spring context with the CGLIB-proxied bean).
+- **Symptom:** `docker compose ps` showed `conveyor-verifier` `Restarting` in a tight loop while all
+  five app services reached `healthy`. Logs: `BeanCreationException: Error creating bean with name
+  'serviceClients' ... Failed to instantiate [ServiceClients$$SpringCGLIB$$0]: No default
+  constructor found`, caused by `NoSuchMethodException:
+  ServiceClients$$SpringCGLIB$$0.<init>()`.
+- **Root cause:** `ServiceClients` was annotated `@Configuration` despite declaring no `@Bean`
+  factory methods at all — it never needed CGLIB proxying in the first place. It also carried a
+  second, test-only constructor (`ServiceClients(Map<String, RestClient>)`, added so
+  `OutsideInCoverageTest` could inject `MockRestServiceServer`-backed clients) alongside the
+  production one (`ServiceClients(VerifierProperties)`), with neither marked `@Autowired`. Spring's
+  `@Configuration` enhancer generates a CGLIB subclass to intercept intra-class `@Bean` calls; with
+  two ambiguous, non-annotated constructors on the superclass, the generated subclass ended up with
+  no constructor Spring's instantiation strategy could match, so it fell back to a no-arg
+  constructor that never existed. Every unit test for `ServiceClients` — `OutsideInCoverageTest`,
+  and every invariant's `checkOutsideIn` test — constructs it directly via `new
+  ServiceClients(...)`, bypassing Spring's container entirely, so none of them could have caught
+  this; only a real `ApplicationContext` startup could, which is exactly what `docker compose up`
+  is for.
+- **Fix:** `ServiceClients` changed from `@Configuration` to a plain `@Component` (it has no `@Bean`
+  methods, so it never needed proxying), and its production constructor marked `@Autowired` to
+  remove the ambiguity with the test-only overload. `ServiceDatabases` was not affected — it
+  legitimately has one `@Bean` method (`serviceJdbcTemplates()`) and only ever had one constructor,
+  so its CGLIB proxy was never ambiguous.
+- **Status:** Fixed, but see the update below — fixing this surfaced a second, independent crash on
+  the very next restart.
+- **Update (same session):** after the `@Component` fix, `conveyor-verifier` crash-looped again with
+  a *different* error: `Failed to configure a DataSource: 'url' attribute is not specified ...
+  Failed to determine a suitable driver class`, inside `OutboxAutoConfiguration`'s `outboxPoller`
+  bean. Root cause: `OutboxAutoConfiguration` (conveyor-common) activates on
+  `@ConditionalOnClass({DataSource.class, KafkaTemplate.class})` — conveyor-verifier never declares
+  `spring-kafka` itself, but conveyor-common does, at compile scope, so `KafkaTemplate` reaches
+  conveyor-verifier's classpath transitively regardless. Every other service satisfies
+  `OutboxAutoConfiguration`'s implicit assumption of "one primary `DataSource` bean," which Spring
+  Boot auto-configures from `spring.datasource.url`; conveyor-verifier is the first service in this
+  codebase with **five** databases and no single "own" one, and never sets that property. Excluded
+  `OutboxAutoConfiguration` explicitly (`@SpringBootApplication(exclude = ...)`) — the correct shape
+  for this service, not a workaround: conveyor-verifier never writes anything, so it was never
+  supposed to have an outbox poller in the first place.
+- **Update (same session, again):** that fix rebuilt clean but crash-looped a *third* time with the
+  identical `Failed to configure a DataSource` message, now surfacing through
+  `WebSecurityConfiguration` instead of `outboxPoller`. Excluding `OutboxAutoConfiguration` had only
+  removed the one bean that *used* the failing `DataSource`; Spring Boot's own
+  `DataSourceAutoConfiguration` was still active (it activates on `DataSource` alone being on the
+  classpath) and still eagerly instantiates its `dataSource` singleton bean during context refresh
+  regardless of whether anything currently autowires it — some other bean in the graph (here,
+  security config's own singleton pre-instantiation ordering) was always going to hit the same wall
+  next. Fixed for real by also excluding `DataSourceAutoConfiguration`,
+  `DataSourceTransactionManagerAutoConfiguration`, and `JdbcTemplateAutoConfiguration` — none of them
+  apply to a service with five independently-managed datasources and no "primary" one, which is what
+  `ServiceDatabases` already builds by hand.
+  <br>Re-verified live, this time confirmed: `docker compose up -d --build conveyor-verifier` →
+  `healthy`, `curl http://localhost:8086/actuator/health` → `{"status":"UP",...}`,
+  `/actuator/prometheus` shows `conveyor_verifier_clean{application="conveyor-verifier"} 1.0` on an
+  empty database.
+- **Status:** Fixed.
+
+---
+
+## [BUG-0021] `ReservationStatus.COMMITTED` was defined but nothing in the codebase ever set it — INV-ORD-01 (ARCHITECTURE.md §13's "headline" invariant) was unimplementable
+- **Date:** 2026-09-11
+- **Phase:** Phase 10 — `conveyor-verifier` (bug is from Phase 4; only now caught, while writing the invariant catalogue and discovering there was no code path that could ever satisfy INV-ORD-01's literal wording)
+- **Severity:** High — a documented, load-bearing domain rule (ARCHITECTURE.md §13: "Every order in
+  `CONFIRMED` has, for each of its line items, a `reservations` row in `COMMITTED`") was structurally
+  false for the entire project's life: `ReservationStatus.COMMITTED` existed as an enum constant since
+  Phase 4, but grepping all of `inventory-service`'s main source for the literal text `COMMITTED`
+  found it in exactly one place — the enum declaration itself. Every confirmed order's reservations
+  stayed `HELD` forever.
+- **Root cause:** no consumer in `inventory-service` ever reacted to `OrderConfirmed`. The saga's
+  `CONFIRM_ORDER` pivot step (saga-orchestrator) and dispatch-service's shipment/notification writes
+  were both wired in Phase 6/7, but nothing closed the loop back to inventory to mark the held stock as
+  permanently fulfilled — a gap in the frozen architecture's Phase-to-phase handoff, not a regression in
+  any single phase's own code.
+- **Fix:** `inventory-service` gained a new `OrderConfirmedListener` (`conveyor.order.events.v1`,
+  mirroring dispatch-service's existing listener on the same topic) → `InventoryReservationService
+  .handleOrderConfirmed`, inbox-guarded on the `OrderConfirmed` event's own `eventId`. For each `HELD`
+  reservation on the order, a new guarded conditional `UPDATE`
+  (`StockItemRepository.commit`) decrements **both** `on_hand` and `reserved` by the held quantity
+  (stock permanently leaves the warehouse on fulfillment, not just the hold) and the reservation moves
+  to `COMMITTED`. This also gives INV-INV-03's conservation equation ("Σ shipped") a real, well-defined
+  term: `Σ COMMITTED reservations.quantity`. No outbox reply is published — this is a one-way reaction
+  to a broadcast event, the same relationship dispatch-service already has to `OrderConfirmed`, not a
+  saga step with a reply contract.
+- **Status:** Fixed. `OrderConfirmedCommitIntegrationTest` (3/3 green): commit decrements both columns
+  and flips the reservation to `COMMITTED`; redelivery of the same `eventId` does not double-commit;
+  an `OrderConfirmed` for an order with no held reservations is a harmless no-op.
+
+---
+
 ## [BUG-0020] Grafana's p50/p95/p99 panels showed "No data" — Micrometer Timers don't publish histogram buckets by default
 - **Date:** 2026-09-11
 - **Phase:** Phase 9 — Observability

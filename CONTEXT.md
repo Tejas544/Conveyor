@@ -1,14 +1,14 @@
-# Context — Last updated: 2026-09-11 (Phase 9 complete)
+# Context — Last updated: 2026-09-11 (Phase 10 complete)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 10 — `conveyor-verifier`: the invariant checker (not started).** Phase
-9 closed this session, human sign-off received to start it ("Start Phase 9 —
-go ahead as planned"). Per `CLAUDE.md` §2.4 the human should checkpoint before
-Phase 10 begins.
+**Phase 11 — Chaos matrix (not started).** Phase 10 closed this session, human
+sign-off received to start it and to proceed straight into Phase 11 afterward
+("Start Phase 10 and then followed by 11 in similar way after 10 completes
+successfully").
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -245,8 +245,80 @@ Phase 10 begins.
   Playwright script, `scripts/capture-trace-screenshot.mjs`, not part of the
   app). Full 7-module reactor green throughout.
 
+- Phase 10 — `conveyor-verifier`: the invariant checker ✅ (2026-09-11). Real gap found and closed
+  before the checker could even be written: `ReservationStatus.COMMITTED` (defined since Phase 4)
+  had no code path that ever set it, making INV-ORD-01 — ARCHITECTURE.md §13's own "headline"
+  invariant — unimplementable (BUG-0021). Fixed with a new `OrderConfirmedListener` in
+  inventory-service (mirroring dispatch-service's listener on the same `conveyor.order.events.v1`
+  topic) → `InventoryReservationService.handleOrderConfirmed`, which commits held reservations and
+  permanently removes the quantity from `on_hand` (not just `reserved`) via a new guarded
+  `StockItemRepository.commit`. This also gave INV-INV-03's conservation equation a real "shipped"
+  term; `CatalogSeedRunner` now logs an audited `stock_adjustments` row for every SKU it creates, so
+  every unit of stock this system has ever had is traceable to an adjustment — no baseline-snapshot
+  statefulness needed in the checker itself.
+  <br>New `conveyor-verifier` module (6th deployable, ADR-13's "test instrument, never in a request
+  path, read-only role" scope note): five `JdbcTemplate`s (one per service database, the
+  `conveyor_verifier` role) for inside-out checking, five `RestClient`s (one per service's already-
+  public API) for outside-in — no endpoint added for the checker's own benefit. All 15 invariants
+  from ARCHITECTURE.md §13 implemented for both modes where structurally possible;
+  `conveyor_invariant_violations_total{invariant}` (the metric Phase 9's own alert rule was written
+  ahead of) published only from the inside-out scheduled loop, since that is the deployed authority.
+  `docs/INVARIANTS.md` — the catalogue graduated out of ARCHITECTURE.md, including a correction to
+  §13's own single-endpoint illustration: INV-ORD-02 turns out to be observable outside-in after
+  all once the checker is allowed to call more than one service, which this one does.
+  <br>Deployment: `docker-compose.yml`'s `conveyor-verifier` service runs continuously and always on
+  (not profile-gated), Prometheus scrapes it; `infra/k8s/conveyor-verifier-cronjob.yaml` written for
+  the K8s shape (not applied — no cluster exists before Phase 13, same posture as Phase 14's
+  Terraform). `make invariant-check` — named to avoid colliding with the Makefile's existing
+  `verify` target (`./mvnw verify`), see Key Decisions Log — runs both modes once and exits non-zero
+  iff the inside-out pass found a violation; wired into `build.yml` as a new `invariant-check` job
+  against a real live compose stack, in addition to the Testcontainers-backed soundness/precision
+  suite that runs in `build-and-test`.
+  <br>**Test:** `InvariantSoundnessTest` (16/16 green) — every invariant's seeded-violation scenario
+  flagged with the correct offending ID on the first real run; two (`INV-INV-01`, `INV-PAY-01`) are
+  enforced by a real Postgres constraint and are named as such rather than counted as an unqualified
+  pass (the harness drops the constraint to construct the violation, per ARCHITECTURE.md §13's own
+  rule). **Test:** `InvariantPrecisionTest` (1/1 green) — 500 independent, schema-faithful clean
+  lifecycles (300 confirmed, 150 cancelled-and-compensated, 50 in-flight) in one shared snapshot,
+  zero violations across the whole catalogue. **Test:** `OutsideInCoverageTest` (6/6 green) — a
+  representative sample of the outside-in mode verified against `MockRestServiceServer` stubs built
+  from the real controller/DTO shapes. `OrderConfirmedCommitIntegrationTest` (inventory-service,
+  3/3 green) covers BUG-0021's fix directly. Full reactor `./mvnw verify` green throughout
+  (9 modules now).
+  <br>**Measured** (`RESULTS.md`'s first entry): 12 of 15 invariants are observable outside-in once
+  the checker aggregates across all five services; the 3 structural gaps (`INV-INV-03`,
+  `INV-PAY-01`, `INV-BOX-01`) each depend on data that is either pure internal bookkeeping never
+  exposed via any endpoint, or that the relevant endpoint's own contract already assumes cannot be
+  violated — exactly ARCHITECTURE.md §13's argument for inside-out checking, now quantified rather
+  than asserted.
+  <br>**Three more real bugs found and fixed getting the sidecar itself to run live** (none
+  catchable by the Testcontainers/mocked-HTTP suite, since none of it boots a real
+  `ApplicationContext` against this specific bean graph) — see BUGS.md for full detail:
+  **BUG-0022** (`ServiceClients` was `@Configuration` with two constructors, and CGLIB proxying
+  broke live bean instantiation — fixed by making it a plain `@Component` with the production
+  constructor marked `@Autowired`; the same investigation then found Spring Boot's own
+  `DataSourceAutoConfiguration`/`OutboxAutoConfiguration` both assume a single "primary" datasource
+  a five-database service structurally doesn't have, fixed by excluding both plus their
+  transaction-manager/`JdbcTemplate` siblings) and **BUG-0024** (the report volume's mountpoint was
+  created root-owned before the non-root container user could claim it, so `ViolationReportWriter`'s
+  file write silently failed even though the same report's stdout/metrics half worked fine — fixed
+  by creating and `chown`-ing the directory in the Dockerfile before switching users).
+  <br>Live verification, in full: `docker compose up -d --build` → all 9 containers healthy
+  including `conveyor-verifier`; seeded the stack; four real orders placed over the public API
+  (`POST /orders`) — two ordinary happy-path orders and one deliberately over-ordered
+  (`SKU-0004` × 999999) to force a live insufficient-stock compensation, which correctly reached
+  `orders.status = CANCELLED`. `GET /inventory/SKU-0001` confirmed BUG-0021's fix live (not just in
+  a test): `onHand` dropped from 30 to 28 and the reservation's status was `COMMITTED`, not
+  `HELD`. `docker compose run --rm -e SPRING_PROFILES_ACTIVE=oneshot conveyor-verifier` (this
+  session's host had no GNU `make`, so `make invariant-check`'s underlying command was run directly)
+  reported **15/15 invariants clean, exit 0** both after the happy-path orders and again after the
+  forced compensation. **30-minute soak** (`scripts/soak-check.sh`, polling
+  `conveyor_verifier_clean` every 60s against the live stack with all four orders already placed):
+  2026-09-10 23:38:51Z → 2026-09-11 00:07:55Z, **30/30 checks clean, zero non-clean readings.**
+
 ## In Progress
-- **Nothing mid-flight.** Phase 9 closed this session; Phase 10 not started.
+- **Nothing mid-flight** as of the last line written above. If Phase 11 has started, see the
+  Current Phase section for where it stands.
 
 ## Blockers
 - **None currently open.** BUG-0007 (disk space) is resolved via the data-root
@@ -266,10 +338,13 @@ Phase 10 begins.
   always tear down any live compose stack before a full `verify` run here.
 
 ## Next Steps
-1. **Checkpoint with the human before Phase 10** (`CLAUDE.md` §2.4) — the
-   invariant checker: `conveyor-verifier`, the 15-invariant catalogue, the
-   seeded-violation negative-control harness, inside-out vs. outside-in
-   detection comparison.
+1. **Phase 11 — chaos matrix.** `ChaosGate` injection points already exist
+   (Phase 3 onward) at every site ARCHITECTURE.md §14 names; Phase 11's job is
+   `chaos/run-matrix.sh` (or a small harness), the ≥56-trial matrix (7 points ×
+   {crash, delay} × ≥4 repetitions) plus broker/DB-unavailable trials, and
+   `RESULTS.md`'s second section (compensation-correctness rate per injection
+   point). `conveyor-verifier`'s `make invariant-check` is the oracle every
+   trial runs against — Phase 10 exists specifically so Phase 11 has one.
 2. Not done as part of Phase 8, still open: `saga.intervention` (an SSE event
    name ARCHITECTURE.md §10.1 lists) has no real source —
    `NEEDS_INTERVENTION` is reached via `SagaTimeoutSweeper`'s escalation,
@@ -277,9 +352,6 @@ Phase 10 begins.
    (Phase 9) at least gives it a Prometheus/Grafana/alert signal now; the
    dashboard itself still has no live push for it, only
    `GET /sagas?state=&stuck=true` polling.
-3. `conveyor_invariant_violations_total` (ARCHITECTURE.md §11's table,
-   referenced by Phase 9's own alert rule) does not exist yet — it is
-   `conveyor-verifier`'s own output, Phase 10's job.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -290,9 +362,69 @@ Phase 10 begins.
   install is required by anyone building this.
 - Docker 28.3 + Compose v2.38 confirmed working as of Phase 2; unresponsive as
   of this session (BUG-0008) — status, not a version change.
+- **GNU Make is not installed on this Windows machine** (discovered Phase 10, running `make
+  invariant-check` for the first time from this shell). Every `make` target in this project's
+  Makefile is a thin wrapper over one or two `docker compose`/`./mvnw` commands, so the underlying
+  command was always run directly instead when needed here. Not an issue in CI — `ubuntu-latest`
+  GitHub Actions runners ship `make` by default, which is what `build.yml`'s jobs actually use.
 
 ## Key Decisions Log
 
+- **Phase 10 — `make invariant-check`, not `make verify`.** PLAN.md's own Phase
+  10 wording ("`make verify` for a one-shot run that exits non-zero on
+  violation") collided with the Makefile's pre-existing `verify` target
+  (`./mvnw verify`, in continuous use since Phase 1). Resolved by naming the
+  new one-shot target `invariant-check` and updating PLAN.md's exit-criterion
+  text to match, rather than renaming the long-established Maven target —
+  logged here as a frozen-plan wording collision, not a design change.
+- **Phase 10 — `InvariantPrecisionTest`'s "500 clean states" are synthetic but
+  schema-faithful, not 500 sagas literally driven through Kafka end to end.**
+  Generating 500 real sagas would take substantial wall-clock time and would
+  only re-prove that the pipeline produces the shapes Phase 6/7's own
+  `SagaHappyPathIntegrationTest`/`SagaCompensationIntegrationTest`/dispatch
+  suites already established — a duplicated cost for no new confidence about
+  the checker itself, which is what this test exists to establish. Instead,
+  500 independent order/saga/reservation/payment/shipment tuples (300
+  confirmed, 150 cancelled-and-compensated, 50 in-flight), each satisfying
+  every invariant by construction, are seeded directly into one shared
+  database snapshot and the full catalogue is run once against all of them
+  together. This is a deliberate scope decision in the same spirit as Phase
+  5's mock-gateway-latency cut and Phase 7's third e2e compensation path,
+  named here rather than silently substituted.
+- **Phase 10 — the multi-database Testcontainers test fixture
+  (`MultiDatabaseTestSupport`) hand-copies each service's real Flyway baseline
+  SQL into `conveyor-verifier/src/test/resources/schema/*.sql` instead of
+  declaring the five service modules as test dependencies.** Pulling in all
+  five modules would create a reactor coupling `conveyor-verifier` has no
+  other reason to have, purely to reuse migration resources — and Flyway
+  itself is not being tested here (each service's own `FlywayMigrationTest`
+  already covers that); only the checker's SQL against a schema shaped like
+  production is. The DDL is copied verbatim (including the two services with
+  a `V2` migration), so a future schema change silently going unreflected here
+  is the one accepted risk of this simplification.
+- **Phase 10 — outside-in mode is allowed to call all five services, not just
+  the one endpoint a naive client would call for a given question, and this
+  changes the actual coverage number.** ARCHITECTURE.md §13's own illustrative
+  argument for inside-out checking ("a reservation held for a cancelled order
+  is invisible to `GET /orders/{id}`") turns out to be true only for a
+  single-endpoint checker — `conveyor-verifier`'s outside-in mode also calls
+  inventory-service's `GET /inventory/{sku}/reservations` and does see it
+  (INV-ORD-02, `OutsideInCoverageTest`). The three invariants that remain
+  genuinely invisible outside-in (`INV-INV-03`, `INV-PAY-01`, `INV-BOX-01`) do
+  so for a different, more precise reason: each depends on data with no GET
+  endpoint anywhere in the public API by design (an audit ledger, an internal
+  publish queue), or on an endpoint whose own contract already assumes the
+  invariant holds. Recorded in `docs/INVARIANTS.md` as a correction to §13's
+  illustration rather than silently reproducing it as a strawman.
+- **Phase 10 — `payments.order_id unique` and `shipments.order_id unique`
+  (both existed since Phase 2) turn out to make `INV-PAY-01` outside-in-
+  invisible but leave `INV-DSP-01` outside-in-*complete*.** The difference:
+  `GET /payments/{orderId}` and `GET /shipments/{orderId}` both assume at most
+  one row exists, but INV-DSP-01 only ever needs to know "does a shipment
+  exist for this order" (a boolean the endpoint answers correctly regardless),
+  while INV-PAY-01 is specifically checking for the "more than one" case the
+  endpoint's own contract can't represent. Worth remembering when adding any
+  future invariant whose truth depends on cardinality rather than presence.
 - **Phase 9 — tracing is Micrometer Tracing's OpenTelemetry bridge, not the
   OpenTelemetry Java agent ARCHITECTURE.md §11 originally specified.** The
   agent instruments by bytecode-weaving at JVM startup, outside Spring's own
