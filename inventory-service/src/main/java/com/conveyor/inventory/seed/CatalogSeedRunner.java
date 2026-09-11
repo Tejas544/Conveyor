@@ -2,11 +2,14 @@ package com.conveyor.inventory.seed;
 
 import com.conveyor.inventory.catalog.CatalogDocument;
 import com.conveyor.inventory.catalog.CatalogRepository;
+import com.conveyor.inventory.domain.StockAdjustment;
 import com.conveyor.inventory.domain.StockItem;
+import com.conveyor.inventory.repository.StockAdjustmentRepository;
 import com.conveyor.inventory.repository.StockItemRepository;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -32,15 +35,21 @@ public class CatalogSeedRunner implements ApplicationRunner {
   private static final List<String> CATEGORIES =
       List.of("electronics", "home", "outdoors", "office", "toys");
 
+  static final String SEED_REASON = "SEED";
+  static final String SEED_ACTOR = "system";
+
   private final StockItemRepository stockItemRepository;
+  private final StockAdjustmentRepository stockAdjustmentRepository;
   private final CatalogRepository catalogRepository;
   private final ConfigurableApplicationContext context;
 
   public CatalogSeedRunner(
       StockItemRepository stockItemRepository,
+      StockAdjustmentRepository stockAdjustmentRepository,
       CatalogRepository catalogRepository,
       ConfigurableApplicationContext context) {
     this.stockItemRepository = stockItemRepository;
+    this.stockAdjustmentRepository = stockAdjustmentRepository;
     this.catalogRepository = catalogRepository;
     this.context = context;
   }
@@ -57,6 +66,11 @@ public class CatalogSeedRunner implements ApplicationRunner {
       int onHand = 20 + (i % 10) * 10;
 
       stockItemRepository.save(new StockItem(sku, onHand, 0, 10));
+      // ARCHITECTURE.md §13's INV-INV-03 conservation check needs every unit of stock this system
+      // has ever had to be traceable to an audited event; without this row a seeded SKU's on_hand
+      // would be conjured from nowhere as far as the checker (or a human auditor) can see.
+      stockAdjustmentRepository.save(
+          new StockAdjustment(UUID.randomUUID(), sku, onHand, SEED_REASON, SEED_ACTOR));
       catalogRepository.save(
           new CatalogDocument(
               sku,

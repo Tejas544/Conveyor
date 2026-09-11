@@ -40,4 +40,18 @@ public interface StockItemRepository extends JpaRepository<StockItem, String> {
   @Query(
       "select s from StockItem s where (:lowStock = false or (s.onHand - s.reserved) <= s.reorderLevel)")
   Page<StockItem> search(@Param("lowStock") boolean lowStock, Pageable pageable);
+
+  /**
+   * Fulfillment: stock that was held now permanently leaves {@code on_hand} (ARCHITECTURE.md §13's
+   * INV-ORD-01/INV-INV-03 — the reservation's terminal state on a confirmed order is {@code
+   * COMMITTED}, not an eternal {@code HELD}). Guarded on {@code reserved >= :qty} the same way
+   * {@link #reserve} is guarded on availability; since {@code on_hand - reserved >= 0} always holds
+   * (the table's own {@code CHECK}), {@code reserved >= qty} already implies {@code on_hand >=
+   * qty}, so subtracting {@code qty} from both columns equally can never violate that constraint.
+   */
+  @Modifying
+  @Query(
+      "update StockItem s set s.onHand = s.onHand - :qty, s.reserved = s.reserved - :qty, "
+          + "s.version = s.version + 1 where s.sku = :sku and s.reserved >= :qty")
+  int commit(@Param("sku") String sku, @Param("qty") int qty);
 }

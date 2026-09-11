@@ -227,6 +227,45 @@ public class InventoryReservationService {
     outboxRecordRepository.save(buildReleasedReply(orderId, sagaId, causationId, reservationIds));
   }
 
+  /**
+   * ARCHITECTURE.md §13's INV-ORD-01 ("the headline"): a {@code CONFIRMED} order must have a {@code
+   * COMMITTED} reservation, not an eternal {@code HELD} one — closed as BUG-0021, a real gap found
+   * while building {@code conveyor-verifier} (Phase 10): nothing in this codebase ever set {@link
+   * ReservationStatus#COMMITTED} before this method existed. Fulfillment permanently removes the
+   * held quantity from {@code on_hand} (not just {@code reserved}) via {@link
+   * StockItemRepository#commit}, which is what gives INV-INV-03's conservation equation an actual
+   * "shipped" term to sum. No outbox reply is published — this is a one-way reaction to a broadcast
+   * event, not a saga step with a reply contract, the same relationship dispatch-service has to
+   * {@code OrderConfirmed}.
+   */
+  @Transactional
+  public void handleOrderConfirmed(UUID eventId, UUID orderId) {
+    InboxRecordId inboxId = new InboxRecordId(eventId, CONSUMER_NAME);
+    if (inboxRecordRepository.existsById(inboxId)) {
+      inboxDuplicatesCounter.increment();
+      return;
+    }
+
+    List<Reservation> held =
+        reservationRepository.findByOrderId(orderId).stream()
+            .filter(r -> r.getStatus() == ReservationStatus.HELD)
+            .toList();
+    for (Reservation reservation : held) {
+      int updated = stockItemRepository.commit(reservation.getSku(), reservation.getQuantity());
+      if (updated == 0) {
+        log.warn(
+            "commit guard failed for order {} sku {} — reserved already below the held quantity;"
+                + " leaving the reservation HELD rather than corrupting stock further",
+            orderId,
+            reservation.getSku());
+        continue;
+      }
+      reservation.setStatus(ReservationStatus.COMMITTED);
+      reservationRepository.save(reservation);
+    }
+    inboxRecordRepository.save(new InboxRecord(inboxId));
+  }
+
   private OutboxRecord buildReservedReply(
       UUID orderId,
       UUID sagaId,
