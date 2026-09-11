@@ -93,12 +93,12 @@ class SagaTimeoutIntegrationTest extends AbstractIntegrationTest {
   }
 
   /**
-   * BUG-0027, found live via Phase 11's chaos matrix: a {@code RESERVING_INVENTORY} timeout
-   * assumes no reply ever arrived, so nothing was reserved — true in general, but not when the
-   * reply is only *late* (redelivery after a crashed {@code SagaReplyListener} lost the race
-   * against the sweeper). Before this fix, {@code handleInventoryReserved} silently discarded a
-   * reply for a saga already {@code ABORTED}, orphaning a real reservation forever
-   * (INV-ORD-02: a CANCELLED order still holding a HELD reservation).
+   * BUG-0027, found live via Phase 11's chaos matrix: a {@code RESERVING_INVENTORY} timeout assumes
+   * no reply ever arrived, so nothing was reserved — true in general, but not when the reply is
+   * only *late* (redelivery after a crashed {@code SagaReplyListener} lost the race against the
+   * sweeper). Before this fix, {@code handleInventoryReserved} silently discarded a reply for a
+   * saga already {@code ABORTED}, orphaning a real reservation forever (INV-ORD-02: a CANCELLED
+   * order still holding a HELD reservation).
    */
   @Test
   void lateInventoryReservedAfterAbortReleasesTheReservationInsteadOfOrphaningIt() {
@@ -116,7 +116,9 @@ class SagaTimeoutIntegrationTest extends AbstractIntegrationTest {
         List.of(new InventoryItemPayload("SKU-1", 2)));
 
     saga = sagaInstanceRepository.findByOrderId(orderId).orElseThrow();
-    assertThat(saga.getState()).as("a terminal saga's own outcome does not change").isEqualTo(SagaState.ABORTED);
+    assertThat(saga.getState())
+        .as("a terminal saga's own outcome does not change")
+        .isEqualTo(SagaState.ABORTED);
 
     OutboxRecord release = onlyRecordFor(orderId, "ReleaseInventory");
     JsonNode payload = objectMapper.valueToTree(release.getPayload()).get("payload");
@@ -124,14 +126,14 @@ class SagaTimeoutIntegrationTest extends AbstractIntegrationTest {
   }
 
   /**
-   * BUG-0027, found live via Phase 11's chaos matrix — "money moved, nobody told," the exact
-   * danger ARCHITECTURE.md §14 names as most dangerous, reached here via a redelivery race rather
-   * than the {@code payment.after-commit-before-publish} point itself: a {@code CHARGING_PAYMENT}
-   * timeout is handled as "nothing was charged, only inventory needs releasing" — true in general,
-   * but not when this is a *late* reply for a charge that crashed and was redelivered after the
-   * sweeper already gave up. Before this fix, {@code handlePaymentCharged} silently discarded a
-   * reply for a saga already {@code ABORTED}, leaving the customer charged for a cancelled order
-   * forever (INV-ORD-03).
+   * BUG-0027, found live via Phase 11's chaos matrix — "money moved, nobody told," the exact danger
+   * ARCHITECTURE.md §14 names as most dangerous, reached here via a redelivery race rather than the
+   * {@code payment.after-commit-before-publish} point itself: a {@code CHARGING_PAYMENT} timeout is
+   * handled as "nothing was charged, only inventory needs releasing" — true in general, but not
+   * when this is a *late* reply for a charge that crashed and was redelivered after the sweeper
+   * already gave up. Before this fix, {@code handlePaymentCharged} silently discarded a reply for a
+   * saga already {@code ABORTED}, leaving the customer charged for a cancelled order forever
+   * (INV-ORD-03).
    */
   @Test
   void latePaymentChargedAfterAbortRefundsThePaymentInsteadOfLeavingTheCustomerCharged() {
@@ -145,7 +147,8 @@ class SagaTimeoutIntegrationTest extends AbstractIntegrationTest {
 
     backdateDeadline(orderId);
     sweeper.sweepOnce(); // CHARGING_PAYMENT timeout -> beginInventoryCompensation
-    orchestrationService.handleInventoryReleased(UUID.randomUUID(), orderId, List.of(reservationId));
+    orchestrationService.handleInventoryReleased(
+        UUID.randomUUID(), orderId, List.of(reservationId));
 
     SagaInstance saga = sagaInstanceRepository.findByOrderId(orderId).orElseThrow();
     assertThat(saga.getState()).isEqualTo(SagaState.ABORTED);
@@ -155,7 +158,50 @@ class SagaTimeoutIntegrationTest extends AbstractIntegrationTest {
         UUID.randomUUID(), orderId, paymentId, new BigDecimal("20.00"), "gw_ref_late");
 
     saga = sagaInstanceRepository.findByOrderId(orderId).orElseThrow();
-    assertThat(saga.getState()).as("a terminal saga's own outcome does not change").isEqualTo(SagaState.ABORTED);
+    assertThat(saga.getState())
+        .as("a terminal saga's own outcome does not change")
+        .isEqualTo(SagaState.ABORTED);
+
+    OutboxRecord refund = onlyRecordFor(orderId, "RefundPayment");
+    JsonNode payload = objectMapper.valueToTree(refund.getPayload()).get("payload");
+    assertThat(payload.get("paymentId").asText()).isEqualTo(paymentId.toString());
+  }
+
+  /**
+   * BUG-0036, found live via Phase 13's own HPA load test — a real gap in BUG-0027's fix above, not
+   * a duplicate of it. That fix only checked {@code SagaState.ABORTED}; this saga is instead still
+   * {@code COMPENSATING_INVENTORY} — {@code RELEASE_INVENTORY} commanded but its reply not yet
+   * processed, exactly the window a live run observed stretching to three retries over several
+   * minutes under load. Before this fix, {@code handlePaymentCharged} hit the `else` branch
+   * ("Ignoring PaymentCharged for saga ... in state COMPENSATING_INVENTORY") and silently dropped
+   * the reply: charged, never refunded, no trace above a WARN log line.
+   */
+  @Test
+  void latePaymentChargedWhileCompensationStillRetryingRefundsThePaymentInsteadOfDroppingIt() {
+    UUID orderId = startSaga();
+    UUID reservationId = UUID.randomUUID();
+    orchestrationService.handleInventoryReserved(
+        UUID.randomUUID(),
+        orderId,
+        List.of(reservationId),
+        List.of(new InventoryItemPayload("SKU-1", 2)));
+
+    backdateDeadline(orderId);
+    sweeper.sweepOnce(); // CHARGING_PAYMENT timeout -> beginInventoryCompensation
+
+    SagaInstance saga = sagaInstanceRepository.findByOrderId(orderId).orElseThrow();
+    assertThat(saga.getState())
+        .as("RELEASE_INVENTORY commanded but not yet replied to — not ABORTED yet")
+        .isEqualTo(SagaState.COMPENSATING_INVENTORY);
+
+    UUID paymentId = UUID.randomUUID();
+    orchestrationService.handlePaymentCharged(
+        UUID.randomUUID(), orderId, paymentId, new BigDecimal("20.00"), "gw_ref_late");
+
+    saga = sagaInstanceRepository.findByOrderId(orderId).orElseThrow();
+    assertThat(saga.getState())
+        .as("the in-flight inventory compensation is untouched by this")
+        .isEqualTo(SagaState.COMPENSATING_INVENTORY);
 
     OutboxRecord refund = onlyRecordFor(orderId, "RefundPayment");
     JsonNode payload = objectMapper.valueToTree(refund.getPayload()).get("payload");

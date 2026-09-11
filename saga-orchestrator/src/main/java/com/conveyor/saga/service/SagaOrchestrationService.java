@@ -303,18 +303,31 @@ public class SagaOrchestrationService {
       return;
     }
     if (saga.getState() != SagaState.CHARGING_PAYMENT) {
-      if (saga.getState() == SagaState.ABORTED) {
+      if (isPastChargingPaymentViaTimeout(saga.getState())) {
         // BUG-0027 (found live via Phase 11's chaos matrix — "money moved, nobody told," exactly
         // the danger ARCHITECTURE.md §14 names as the most dangerous injection point, reached here
         // via a redelivery race rather than that specific point): a CHARGING_PAYMENT timeout is
         // handled as "no reply arrived, so nothing was charged, only inventory needs releasing" —
         // true in general, but not when this is a *late* reply for a charge that crashed and was
         // redelivered after the sweeper already gave up. Refund immediately using the paymentId
-        // this reply just revealed; the saga's own outcome (ABORTED) does not change.
+        // this reply just revealed; the saga's own outcome does not change.
+        //
+        // BUG-0036 (found live via Phase 13's own HPA load test, a genuine gap in BUG-0027's
+        // original fix): that fix only checked SagaState.ABORTED, but RELEASE_INVENTORY
+        // compensation (triggered by the same CHARGE_PAYMENT timeout that made this reply "late")
+        // can itself retry for an extended period under load before the saga actually reaches
+        // ABORTED — real 7-minute gap observed live, three RELEASE_INVENTORY attempts before
+        // success. A late PaymentCharged reply arriving mid-compensation (state
+        // COMPENSATING_INVENTORY) or after compensation itself escalated (NEEDS_INTERVENTION) hit
+        // the `else` branch below and was silently dropped: charged, never refunded, no log above
+        // WARN. Covering every state this saga can be in *because of* that same timeout — not just
+        // its eventual terminal one — closes the gap.
         log.warn(
-            "Saga {} already ABORTED when PaymentCharged arrived for order {} — refunding payment"
-                + " {} this late reply reveals rather than leaving the customer charged",
+            "Saga {} already past CHARGING_PAYMENT (state {}) when PaymentCharged arrived for"
+                + " order {} — refunding payment {} this late reply reveals rather than leaving"
+                + " the customer charged",
             saga.getId(),
+            saga.getState(),
             orderId,
             paymentId);
         String idempotencyKey = saga.getId() + ":" + SagaSteps.REFUND_PAYMENT;
@@ -324,7 +337,13 @@ public class SagaOrchestrationService {
             StepDirection.COMPENSATION,
             StepStatus.STARTED,
             eventId,
-            Map.of("reason", "late PaymentCharged reply after saga aborted", "paymentId", paymentId.toString()));
+            Map.of(
+                "reason",
+                "late PaymentCharged reply after CHARGE_PAYMENT timeout (state "
+                    + saga.getState()
+                    + ")",
+                "paymentId",
+                paymentId.toString()));
         outboxRecordRepository.save(
             buildOutboxRecord(
                 KafkaTopics.PAYMENT_COMMANDS,
@@ -712,6 +731,22 @@ public class SagaOrchestrationService {
     return sagaInstanceRepository
         .findByOrderId(orderId)
         .orElseThrow(() -> SagaNotFoundException.forOrderId(orderId));
+  }
+
+  /**
+   * BUG-0036: every state a saga can be in *as a direct consequence of* a {@code CHARGE_PAYMENT}
+   * timeout — not just the eventual terminal one. {@code COMPENSATING_INVENTORY} covers a {@code
+   * RELEASE_INVENTORY} compensation still retrying (the gap this bug closes: the original BUG-0027
+   * fix only checked {@code ABORTED}); {@code NEEDS_INTERVENTION} covers that same compensation
+   * having exhausted its retries and escalated (PLAN.md Phase 6) before this reply arrived. {@code
+   * COMPENSATING_PAYMENT} is deliberately excluded — that state is reached only via the
+   * operator-abort path (a *successful* charge already known to the saga, not a late one), an
+   * unrelated trigger this method has no business reinterpreting.
+   */
+  private boolean isPastChargingPaymentViaTimeout(SagaState state) {
+    return state == SagaState.ABORTED
+        || state == SagaState.COMPENSATING_INVENTORY
+        || state == SagaState.NEEDS_INTERVENTION;
   }
 
   private boolean dedupe(UUID eventId) {
