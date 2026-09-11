@@ -20,6 +20,152 @@ Format for each entry:
 
 ---
 
+## [BUG-0027] "Money moved, nobody told" and its inventory twin: a late reply arriving after the saga already timed out and aborted was silently discarded, leaving a real charge or a real reservation permanently orphaned
+- **Date:** 2026-09-11
+- **Phase:** Phase 11 — Chaos matrix (bug is from Phase 6; found live via the same chaos trials that
+  found BUG-0026, once that fix let the affected sagas' outcomes actually surface through to
+  `orders.status` for the first time)
+- **Severity:** Critical — this is exactly the danger ARCHITECTURE.md §14 names as "the most
+  dangerous" injection point ("money moved, nobody told"), reached here via a redelivery race
+  rather than the `payment.after-commit-before-publish` point specifically. A customer's payment
+  method was genuinely charged for an order that reports `CANCELLED`, with no code path that would
+  ever refund it. The inventory-side twin (a `CANCELLED` order permanently holding a `HELD`
+  reservation) is a correctness bug rather than a financial one, but shares the identical root
+  cause and fix.
+- **Symptom:** live, after BUG-0026's fix let `saga.after-reply-before-state-write` /
+  `saga.after-state-write-before-command` / `payment.before-commit` crash trials correctly reach
+  `orders.status = CANCELLED`, `conveyor-verifier` immediately flagged two *new* invariants on
+  those same orders: **INV-ORD-02** (a `CANCELLED` order still holding a `HELD` reservation) and
+  **INV-ORD-03** (a `CANCELLED` order with a payment still `CAPTURED`, never `REFUNDED`). Checked
+  live: `GET /payments/{orderId}` on one such order showed `"status":"CAPTURED"` with a real
+  `gatewayReference` — the mock gateway had genuinely processed the charge — on an order whose own
+  `GET /orders/{orderId}` reported `CANCELLED`.
+- **Root cause:** `SagaOrchestrationService.handleInventoryReserved` and `.handlePaymentCharged`
+  both guard on the saga being in the exact expected non-terminal state
+  (`RESERVING_INVENTORY`/`CHARGING_PAYMENT`) and, if not, log a warning and silently return —
+  correct behavior for a genuine duplicate redelivery of a reply already processed, but wrong for
+  the case this chaos scenario produces: the *original* command's reply is only *late* (the
+  consuming service crashed and was redelivered after `SagaTimeoutSweeper` had already claimed and
+  aborted the saga, per BUG-0026's own timeline), so this is genuinely new information — inventory
+  really did reserve stock, or payment really did capture a charge — that nothing had ever recorded
+  and therefore nothing would ever compensate. The forward-timeout policy's own reasoning
+  ("`RESERVING_INVENTORY`/`CHARGING_PAYMENT` timing out means no reply ever arrived, so there is
+  nothing to release/refund by construction") is correct for every cause of that timeout *except*
+  this one: a reply that eventually arrives, just too late to win the race against the sweeper.
+- **Fix:** both handlers gained an `else if (saga.getState() == SagaState.ABORTED)` branch: instead
+  of discarding the late reply, it immediately issues the compensating command
+  (`ReleaseInventory`/`RefundPayment`) using the reservation ID or payment ID *the late reply
+  itself carries* — the only place that information ever existed, since the saga's own step log
+  never recorded it. The saga's own outcome is left unchanged (still `ABORTED` — a terminal saga
+  does not un-terminate), only the compensating side effect is triggered. Both compensating
+  commands are already idempotent-safe at the receiving service (Phase 4/5's own established
+  design), so no new idempotency risk is introduced.
+- **Status:** Fixed. New regression tests in `SagaTimeoutIntegrationTest`
+  (`lateInventoryReservedAfterAbortReleasesTheReservationInsteadOfOrphaningIt`,
+  `latePaymentChargedAfterAbortRefundsThePaymentInsteadOfLeavingTheCustomerCharged`) reproduce the
+  exact race (drive the saga to `ABORTED` via the timeout path, then deliver the "late" reply
+  directly) and assert the correct compensating command is published with the right ID; full
+  `saga-orchestrator` suite 27/27 green. Re-verified live via a second full chaos matrix run with
+  the fix in place — see `RESULTS.md`'s Phase 11 section for the before/after trial numbers.
+
+---
+
+## [BUG-0026] Timeout-triggered saga aborts publish `OrderCancelled` directly, with no intermediate event — `orders.status` gets stuck forever at `INVENTORY_RESERVED`/`PAYMENT_CHARGED`, even though the saga itself correctly reaches `ABORTED`
+- **Date:** 2026-09-11
+- **Phase:** Phase 11 — Chaos matrix (bug is from Phase 6; found live, for the first time, by the
+  chaos matrix's crash trials — no prior test, including Phase 6's own
+  `SagaTimeoutIntegrationTest` and the `e2e` module, ever drove a timeout-triggered abort through a
+  real order-service consumer to check the projection actually catches up)
+- **Severity:** High — a real, 100%-reproducible correctness gap in the saga's headline guarantee
+  (INV-SAGA-05: "for every saga terminal for more than 30s, `orders.status` agrees with the saga
+  outcome"). Every one of the three affected injection points failed **every single repetition**
+  (0/4, 0/4, 0/2 — the fourth `inventory.after-reserve-before-publish` pair also hit this, see
+  BUG-0025's harness-error trials 36/38 for why only 2 of its 4 reps produced a clean record at
+  all) in the full chaos matrix run, confirming this is systematic, not flaky.
+- **Symptom:** live, minutes after three crash trials completed (`saga.after-reply-before-state-write`,
+  `saga.after-state-write-before-command`, `payment.before-commit`), `GET /sagas/{orderId}` showed
+  `state: "ABORTED"` with a fully correct compensation step log (`RESERVE_INVENTORY TIMED_OUT` for
+  the first two; `CHARGE_PAYMENT TIMED_OUT` → `RELEASE_INVENTORY SUCCEEDED` for the third) — the
+  saga itself had genuinely, correctly self-healed. But `GET /orders/{orderId}` on the exact same
+  order still showed `INVENTORY_RESERVED` / `PAYMENT_CHARGED` respectively, unchanged since the
+  moment the timeout fired, with no further update ever coming. `conveyor-verifier`'s
+  `INV-SAGA-05` flagged this correctly the very first time it was run against affected data (in an
+  earlier, harness-buggy run this was wrongly dismissed as a fabricated finding — see BUG-0025 — but
+  the underlying phenomenon was real all along and reproduced cleanly once the harness itself was
+  fixed).
+- **Root cause:** `OrderStatus`'s guarded state machine (`order-service`) only allowed `CANCELLED`
+  as a target from `COMPENSATING`, never directly from `PLACED`/`INVENTORY_RESERVED`/
+  `PAYMENT_CHARGED`. A saga abort triggered by a *reply* event
+  (`InventoryReservationFailed`/`PaymentFailed`, from inventory-service or payment-service actively
+  rejecting the command) naturally produces that `COMPENSATING` intermediate step for
+  `SagaEventProjectionListener` to project first. But `SagaTimeoutSweeper`'s deadline-driven aborts
+  (`SagaOrchestrationService.applyTimeoutPolicy`, `terminateAborted`) never received any reply to
+  relay in the first place — nothing ever timed out *because* inventory or payment said no; it
+  timed out because no reply ever arrived at all — so that code path goes straight from internal
+  saga state to publishing `OrderCancelled`, with no equivalent event for order-service's
+  projection to see first. `SagaEventProjectionListener.onMessage` catches exactly this case
+  (`IllegalOrderTransitionException`) and — correctly, by its own stated contract ("saga and
+  projection disagree on state") — logs a warning and discards the message rather than throwing,
+  which is the right behavior for a genuinely conflicting update but the wrong diagnosis here: the
+  saga and the projection didn't disagree, the projection was just missing a legal edge on its own
+  state diagram.
+- **Fix:** `OrderStatus.ALLOWED_TRANSITIONS` (`order-service`) now also allows `CANCELLED` directly
+  from `PLACED`, `INVENTORY_RESERVED`, and `PAYMENT_CHARGED` — the state diagram gains one edge from
+  each non-terminal pre-confirmation state, not a redesign. `OrderStateMachineTest`'s mirrored
+  `LEGAL` map updated identically (7/7 green, including the previously-`isInstanceOf` no-op-turned-
+  legal `INVENTORY_RESERVED -> CANCELLED` and `PAYMENT_CHARGED -> CANCELLED` pairs). New regression
+  test `SagaEventProjectionListenerTest#orderCancelledAdvancesOrderStatusDirectlyFromInventoryReservedWithNoInterveningCompensatingEvent`
+  publishes a real `OrderCancelled` envelope at an order sitting in `INVENTORY_RESERVED` (no
+  `COMPENSATING` step in between, reproducing the timeout path exactly) and asserts it reaches
+  `CANCELLED` (2/2 green in that class).
+- **Status:** Fixed. Re-verified against a full live chaos matrix re-run: the three previously-100%-
+  stuck injection points now correctly reach `orders.status = CANCELLED` matching the saga's own
+  `ABORTED` outcome, every time. That same re-run immediately surfaced a second, more serious bug
+  the first one had been masking — BUG-0027.
+
+---
+
+## [BUG-0025] `chaos/run_matrix.py`'s first three working versions each had a real bug of their own, found only by actually running it against the live stack
+- **Date:** 2026-09-11
+- **Phase:** Phase 11 — Chaos matrix (harness development, `--quick` smoke-testing before committing
+  to a full ~60-trial run)
+- **Severity:** Medium — these are bugs in the *test harness*, not the application, but they
+  produced misleading results (a fabricated "finding" and several false negatives) that would have
+  gone into `RESULTS.md` as real product defects had the harness not been smoke-tested first with
+  `--quick` and its output actually read critically.
+- **Symptom / root cause / fix, three distinct issues found across three `--quick` runs:**
+  1. **Recreating all five app services per trial, not just the one under test.** The first version
+     force-recreated every service on every trial (arm and disarm both). This disrupted four
+     services that had nothing to do with the injection point being tested, and produced the run's
+     one fabricated finding: `INV-SAGA-05` violated on three orders whose sagas got stuck mid-flight
+     purely because unrelated services were yanked out from under them mid-processing. Fixed by a
+     `POINT_TO_SERVICE` map so a trial only ever touches the one container whose code actually calls
+     `maybeCrash`/`maybeDelay` with that point's name.
+  2. **`docker compose ps` (without `-a`) never lists exited containers at all** — Docker's default
+     `ps` behavior, not a bug in Docker, but the harness's `container_state()` called it without
+     `-a` and treated "no output" as `"absent"`, never `"exited"`. This made crash detection
+     (`wait_for_any_exit`) blind 100% of the time: every crash-mode trial's `crashConfirmedOn` came
+     back `None` even though `docker compose ps -a` confirmed (checked by hand) the target container
+     really had exited with code 1 from `Runtime.halt(1)`, sometimes over a minute earlier. Because
+     detection never fired, the harness's disarm-and-recover step never ran either, leaving crashed
+     services dead (no auto-restart, by design — `chaos/docker-compose.chaos-override.yml` sets
+     `restart: "no"`) for the rest of that trial and every trial after it until the next accidental
+     recreate — explaining the run of `TIMEOUT`/`NO_ORDER_ID` results that got worse as the run went
+     on. Fixed by adding `-a` to both `docker compose ps` call sites.
+  3. **`urllib.error.HTTPError` is a subclass of `urllib.error.URLError`**, and the harness's
+     `except (urllib.error.URLError, ...)` clause caught both — meaning a completely ordinary HTTP
+     error response (a `401` from an access token that expired mid-run, since one token was reused
+     for the whole ~20-minute run against a 15-minute TTL) was indistinguishable from a connection
+     actually being killed by a real crash. Fixed by catching `HTTPError` first and separately
+     (logging the real status code), and by having every trial log in fresh instead of sharing one
+     token for the whole run.
+- **Status:** Fixed, all three, and re-verified with a clean `--quick` run afterward: crash detection
+  correctly names the right container on every crash trial, and 12/16 trials came back genuinely
+  clean with 4 genuine (not fabricated) non-clean results under investigation for the full run — see
+  `RESULTS.md`'s Phase 11 section.
+
+---
+
 ## [BUG-0024] `ViolationReportWriter` silently failed every write live: the report volume's mountpoint was root-owned, the container runs as a non-root user
 - **Date:** 2026-09-11
 - **Phase:** Phase 10 — `conveyor-verifier` (live-compose verification)
