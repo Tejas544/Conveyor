@@ -20,6 +20,17 @@ Format for each entry:
 
 ---
 
+## [BUG-0045] MongoDB's liveness probe killed it mid first-boot on a fresh kind cluster in CI, permanently breaking root-user auth for the rest of the deployment
+- **Date:** 2026-09-11
+- **Phase:** Phase 14 — CI/CD and deployment (found live on `deploy-to-kind`'s first-ever full run, once every other Phase 14 fix was already in place)
+- **Severity:** High
+- **Symptom:** `helm upgrade --install` times out (`context deadline exceeded`) waiting for the release to become ready. `kubectl get pods` shows `inventory-service` in `CrashLoopBackOff` and `dispatch-service` restarting repeatedly, both failing with `MongoCommandException: Authentication failed` / `AuthenticationFailed`. `mongo-0` itself shows one restart (`RESTARTS 1`) very early in its life, and its own readiness probe log shows `MongoNetworkError: connect ECONNREFUSED 127.0.0.1:27017` moments before that restart.
+- **Root cause:** `infra/helm/conveyor/templates/mongo/statefulset.yaml`'s `livenessProbe` had no `initialDelaySeconds` at all — the first check fires ~10s after container start, and only 6 failures (~70s total) are tolerated before Kubernetes kills the container. On this project's usual fast/warm local dev host, MongoDB's own first-time `MONGO_INITDB_ROOT_USERNAME`-driven root-user creation finishes well inside that window; on a freshly-provisioned dynamic `local-path` PV on a kind node under real CI resource contention (Strimzi, five app JVMs, and Kafka all starting at once — the same class of contention as BUG-0044), it did not. The liveness probe killed the container mid-initialization; the restart then found a data directory with WiredTiger files already present but no complete root user, so `docker-entrypoint.sh` skipped re-running its init scripts and every subsequent authentication attempt failed permanently for the rest of the deployment's life.
+- **Fix:** Added `initialDelaySeconds: 10` (readiness) / `initialDelaySeconds: 30` (liveness) to `mongo`'s StatefulSet probes, with headroom added to `failureThreshold` to match — gives first-boot on a slow/cold node real time to finish before either probe can act on it.
+- **Status:** Fixed. No persistent bad state to remediate: the affected cluster was this CI run's own ephemeral kind cluster, torn down at the end of the job regardless of outcome.
+
+---
+
 ## [BUG-0044] `invariant-check` CI job saw one transient connection failure under real runner resource contention, even after BUG-0040's `--wait` fix
 - **Date:** 2026-09-11
 - **Phase:** Phase 14 — CI/CD and deployment (found live on the first CI run to get this far with every other Phase 14 fix already in place)

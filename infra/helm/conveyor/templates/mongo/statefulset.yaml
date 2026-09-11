@@ -27,15 +27,23 @@ spec:
           envFrom:
             - secretRef:
                 name: mongo-credentials
+          # BUG-0045: no initialDelaySeconds at all meant the livenessProbe's first check fired
+          # ~10s after container start with only 6 failures (~70s total) tolerated before a kill --
+          # fine on a fast/warm local dev host, not on a freshly-provisioned dynamic PV on a kind
+          # node under real CI resource contention, where MongoDB's own first-time root-user
+          # creation was still in progress when the probe killed it mid-init. The restart then left
+          # a half-initialized data directory that authentication could never succeed against again.
           readinessProbe:
             exec:
               command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+            initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 5
-            failureThreshold: 10
+            failureThreshold: 12
           livenessProbe:
             exec:
               command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+            initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 6
