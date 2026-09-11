@@ -160,10 +160,42 @@ public class SagaOrchestrationService {
       return;
     }
     if (saga.getState() != SagaState.RESERVING_INVENTORY) {
-      log.warn(
-          "Ignoring InventoryReserved for saga {} in state {} (expected RESERVING_INVENTORY)",
-          saga.getId(),
-          saga.getState());
+      if (saga.getState() == SagaState.ABORTED) {
+        // BUG-0026/0027 (found live via Phase 11's chaos matrix): a RESERVING_INVENTORY timeout
+        // means no reply had arrived *yet* when the sweep claimed the saga — it does not mean the
+        // reservation never happened. If this reply is only late (e.g. a crashed
+        // SagaReplyListener's redelivery lost the race against the sweeper), inventory-service
+        // really did reserve stock this saga's own log never learned about, and nothing would ever
+        // release it. The saga stays ABORTED (a terminal saga's own outcome doesn't change) but the
+        // reservation this reply just revealed is compensated immediately, using the reservation
+        // IDs the reply carries — the one place that information ever existed.
+        log.warn(
+            "Saga {} already ABORTED when InventoryReserved arrived for order {} — releasing the"
+                + " reservation this late reply reveals rather than orphaning it",
+            saga.getId(),
+            orderId);
+        appendStep(
+            saga.getId(),
+            SagaSteps.RELEASE_INVENTORY,
+            StepDirection.COMPENSATION,
+            StepStatus.STARTED,
+            eventId,
+            Map.of("reason", "late InventoryReserved reply after saga aborted"));
+        outboxRecordRepository.save(
+            buildOutboxRecord(
+                KafkaTopics.INVENTORY_COMMANDS,
+                ReleaseInventoryPayload.EVENT_TYPE,
+                ReleaseInventoryPayload.SCHEMA_VERSION,
+                new ReleaseInventoryPayload(reservationIds),
+                orderId,
+                saga.getId(),
+                eventId));
+      } else {
+        log.warn(
+            "Ignoring InventoryReserved for saga {} in state {} (expected RESERVING_INVENTORY)",
+            saga.getId(),
+            saga.getState());
+      }
       return;
     }
 
@@ -271,7 +303,40 @@ public class SagaOrchestrationService {
       return;
     }
     if (saga.getState() != SagaState.CHARGING_PAYMENT) {
-      log.warn("Ignoring PaymentCharged for saga {} in state {}", saga.getId(), saga.getState());
+      if (saga.getState() == SagaState.ABORTED) {
+        // BUG-0027 (found live via Phase 11's chaos matrix — "money moved, nobody told," exactly
+        // the danger ARCHITECTURE.md §14 names as the most dangerous injection point, reached here
+        // via a redelivery race rather than that specific point): a CHARGING_PAYMENT timeout is
+        // handled as "no reply arrived, so nothing was charged, only inventory needs releasing" —
+        // true in general, but not when this is a *late* reply for a charge that crashed and was
+        // redelivered after the sweeper already gave up. Refund immediately using the paymentId
+        // this reply just revealed; the saga's own outcome (ABORTED) does not change.
+        log.warn(
+            "Saga {} already ABORTED when PaymentCharged arrived for order {} — refunding payment"
+                + " {} this late reply reveals rather than leaving the customer charged",
+            saga.getId(),
+            orderId,
+            paymentId);
+        String idempotencyKey = saga.getId() + ":" + SagaSteps.REFUND_PAYMENT;
+        appendStep(
+            saga.getId(),
+            SagaSteps.REFUND_PAYMENT,
+            StepDirection.COMPENSATION,
+            StepStatus.STARTED,
+            eventId,
+            Map.of("reason", "late PaymentCharged reply after saga aborted", "paymentId", paymentId.toString()));
+        outboxRecordRepository.save(
+            buildOutboxRecord(
+                KafkaTopics.PAYMENT_COMMANDS,
+                RefundPaymentPayload.EVENT_TYPE,
+                RefundPaymentPayload.SCHEMA_VERSION,
+                new RefundPaymentPayload(paymentId, amount, idempotencyKey),
+                orderId,
+                saga.getId(),
+                eventId));
+      } else {
+        log.warn("Ignoring PaymentCharged for saga {} in state {}", saga.getId(), saga.getState());
+      }
       return;
     }
 
