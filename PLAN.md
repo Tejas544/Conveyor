@@ -656,35 +656,75 @@ correct — measuring the throughput of a system that loses orders is meaningles
 
 # Stage E — Ship
 
-## Phase 13 — Containerization and Kubernetes (local) · **M**
+## Phase 13 — Containerization and Kubernetes (local) · **M** · ✅ Complete (2026-09-11)
 
 **Goal.** The whole system on Kubernetes locally — free — so the paid EKS window
 is short and low-risk.
 
 **Deliverables.**
-- Hardened Dockerfiles: layered jars, distroless or alpine JRE, non-root,
-  read-only rootfs, pinned base digests, `HEALTHCHECK`.
-- Helm chart (one chart, per-service subcharts or a values-driven template) with
-  **resource requests and limits on every deployment** (`CLAUDE.md` §7 — required
-  for the autoscaling measurement to mean anything), liveness/readiness/startup
-  probes, `PodDisruptionBudget`, `HorizontalPodAutoscaler` definitions.
-- Strimzi Kafka, Postgres and Mongo for the local cluster; ConfigMaps/Secrets;
-  `NetworkPolicy` restricting each service to its own datastore.
-- `kind`/`k3d` bring-up script + metrics-server.
-- **HPA dry run on kind**: the Phase 15 method rehearsed locally so the EKS
-  session is execution, not debugging.
+- [x] Hardened Dockerfiles: layered jars, alpine JRE (kept — already established since Phase 1,
+      not switched to distroless; BUG-0035's fix removed the actual CVE/bloat problem this session
+      found, which is what would have motivated a base-image change), non-root
+      (numeric `USER 100:101` — BUG-0033), read-only
+      rootfs (`readOnlyRootFilesystem: true` in the Helm chart's securityContext, `/tmp` as an
+      `emptyDir`; every pod has run successfully under it throughout this phase), pinned base
+      digests (`eclipse-temurin:21-{jdk,jre}-alpine@sha256:...`), `HEALTHCHECK` (pre-existing,
+      unchanged).
+- [x] Helm chart (`infra/helm/conveyor`, one values-driven chart) with resource requests/limits on
+      every Deployment/StatefulSet/CronJob (grounded in RESULTS.md's Phase 12 CPU measurements, not
+      guessed — see `values.yaml`'s own comment), liveness/readiness/startup probes off the existing
+      Actuator groups, `PodDisruptionBudget` per Deployment, `HorizontalPodAutoscaler` on
+      order-service (CPU — saga-orchestrator's custom-metric HPA is Phase 15's, deliberately not
+      pre-empted here, see Key Decisions Log).
+- [x] Strimzi Kafka (`infra/k8s/kafka/`, KRaft, single dual-role node), Postgres and Mongo
+      (StatefulSets in the chart); Secrets for all credentials; `NetworkPolicy` restricting Mongo to
+      its two real consumers and Postgres to the Conveyor app tier (the practical limit given one
+      shared instance — see `networkpolicy.yaml`'s own comment and Key Decisions Log), verified live
+      with both positive and negative controls (Calico, not kindnetd, which does not enforce
+      NetworkPolicy at all — see Key Decisions Log).
+- [x] `scripts/kind-up.sh` (`make kind-up`) + metrics-server (patched `--kubelet-insecure-tls` for
+      kind's self-signed kubelet certs).
+- [x] **HPA dry run on kind**, live: 20 concurrent load generators for 3 minutes drove order-service
+      from 1→5 replicas (max, CPU 379% of target), then back to 1 after load stopped and the default
+      5-minute scale-down stabilization window elapsed.
 
 **Dependencies.** Phase 12.
 
 **Exit criteria.**
-- [ ] `make kind-up && helm install` → all pods `Ready`, no `CrashLoopBackOff`.
-- [ ] **Test:** the full E2E suite passes against the kind cluster, not just
-      compose.
-- [ ] **Test:** `kubectl delete pod` on each service in turn → the system
-      self-heals and the invariant checker stays clean.
-- [ ] Every container passes Trivy with no `HIGH`/`CRITICAL` unsuppressed.
-- [ ] HPA scales a service up and back down on kind under synthetic load.
-- [ ] Images are reproducible: same commit → same digest.
+- [x] `make kind-up && helm install` → all pods `Ready`, no `CrashLoopBackOff`. Verified live after
+      two real bugs blocked it first try (BUG-0031: Strimzi operator landed in the wrong namespace;
+      BUG-0033: `runAsNonRoot` couldn't verify a symbolic Dockerfile `USER`) — both fixed, then all
+      pods (5 app services + Postgres + Mongo + the Kafka broker + Strimzi's entity-operator and
+      cluster-operator) reached `Running`/`1/1`.
+- [x] **Test:** the full E2E suite passes against the kind cluster, not just compose. New
+      `KindE2ESmokeTest` (not a rewrite of the existing `ComposeContainer`-based suite — see Key
+      Decisions Log for why a parallel class, not a shared one, was the right call) covers all three
+      scenarios (happy path, insufficient-stock compensation, forced-payment-decline compensation)
+      against kind's NodePorts. 3/3 green, run twice (before and after BUG-0036's fix).
+- [x] **Test:** `kubectl delete pod` on each of the five app services plus Postgres and Mongo, in
+      turn → every Deployment/StatefulSet self-healed to `Running`, and the very next
+      `conveyor-verifier` run after each reported 15/15 invariants clean.
+- [x] Every container passes Trivy with no `HIGH`/`CRITICAL` unsuppressed. Real findings on the
+      first scan (BUG-0035: a ~20MB Testcontainers/docker-java payload — including a CRITICAL Tomcat
+      CVE — had shipped in every production image since Phase 1, invisible to `dependency:tree`
+      since the vulnerable artifact was shaded inside another jar); all six images now scan clean —
+      0 alpine findings, 0 jar findings, verified individually.
+- [x] HPA scales a service up and back down on kind under synthetic load — see the dry-run bullet
+      above; live values: 1 → 5 replicas under load (`cpu: 379%/60%`), back to 1 within the default
+      stabilization window after load stopped.
+- [x] Images are reproducible: same commit → same digest. Required two fixes beyond
+      `project.build.outputTimestamp` (already added): BuildKit's default provenance attestation
+      embeds a real build timestamp (BUG-0030, fixed with `--provenance=false`), and Alpine's OS
+      packages needed pinning to exact patched versions rather than an unpinned `apk upgrade`
+      (BUG-0035's fix) to stay reproducible while also fixing their CVEs. Verified live: two
+      back-to-back builds of the final Dockerfile state produce byte-identical
+      `docker inspect --format='{{.Id}}'` output.
+
+**A sixth, unplanned but critical finding.** This phase's own HPA load test surfaced BUG-0036 — a
+real gap in Phase 11's BUG-0027 fix (a late `PaymentCharged` reply arriving while a saga was still
+`COMPENSATING_INVENTORY`, not yet `ABORTED`, was silently dropped: customer charged, never refunded).
+Fixed immediately per `CLAUDE.md` §2.7's established practice for this severity class, with a new
+regression test; full detail in `BUGS.md`.
 
 ---
 

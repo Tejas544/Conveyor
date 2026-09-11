@@ -20,6 +20,222 @@ Format for each entry:
 
 ---
 
+## [BUG-0036] A late `PaymentCharged` reply arriving mid-compensation (not yet `ABORTED`) was silently dropped — customer charged, never refunded
+- **Date:** 2026-09-11
+- **Phase:** Phase 13 — Containerization and Kubernetes (local); found live by this phase's own HPA
+  synthetic-load test (20 concurrent order-placement loops against order-service for 3 minutes,
+  driving real HPA scale-up 1→5), not a designed chaos scenario — the same class of finding Phase 11
+  exists to produce, surfacing here as an unplanned side effect of a different exit criterion.
+- **Severity:** Critical — real financial-integrity defect: "payment still CAPTURED on a CANCELLED
+  order," `conveyor-verifier`'s own INV-ORD-03 (`ARCHITECTURE.md` §14's "money moved, nobody told,"
+  the danger label reserved for the single most dangerous class of bug in this system). 2 of the
+  orders placed during the load test hit it live (exact total order count not captured — the load
+  script's own goal was CPU load for the HPA test, not a counted throughput run like Phase 12's).
+- **Symptom:** a live `conveyor-verifier` inside-out run (previously always clean throughout this
+  session) reported 6 violations across three invariants: INV-ORD-02 (reservation still `HELD`),
+  INV-ORD-03 (payment `CAPTURED` on a `CANCELLED` order — the serious one), and INV-SAGA-02
+  (`RESERVE_INVENTORY` succeeded with no compensation on an `ABORTED` saga).
+- **Root cause:** a real, previously-unknown gap in BUG-0027's own fix (Phase 11). That fix taught
+  `handlePaymentCharged` to refund a late-arriving `PaymentCharged` reply instead of silently
+  discarding it — but only when `saga.getState() == SagaState.ABORTED`. Under this phase's load, the
+  `RELEASE_INVENTORY` compensation a `CHARGE_PAYMENT` timeout triggers took three retries spanning
+  **~7 minutes** (`saga-orchestrator` logs: attempts at 11:24:21, 11:25:43, 11:28:54, succeeding at
+  11:31:44) before the saga actually reached `ABORTED`. The late `PaymentCharged` reply's payment
+  record was created at 11:25:04 — squarely inside that window, while the saga was still
+  `COMPENSATING_INVENTORY`, not yet `ABORTED`. The `else` branch logged `"Ignoring PaymentCharged for
+  saga ... in state COMPENSATING_INVENTORY"` at `WARN` and did nothing else: no refund, no trace
+  above that one log line. Confirmed directly from `saga-orchestrator`'s own logs for the exact
+  order/saga IDs the verifier flagged, not inferred.
+- **Fix:** `SagaOrchestrationService.handlePaymentCharged` now checks
+  `isPastChargingPaymentViaTimeout(saga.getState())` — `ABORTED`, `COMPENSATING_INVENTORY`, or
+  `NEEDS_INTERVENTION` (every state reachable *because of* the same `CHARGE_PAYMENT` timeout that
+  made this reply late, not just its eventual terminal one) — instead of `== ABORTED` alone.
+  `COMPENSATING_PAYMENT` is deliberately excluded: that state is reached only via the unrelated
+  operator-abort path, where a charge is already known-successful, not late. New regression test,
+  `SagaTimeoutIntegrationTest#latePaymentChargedWhileCompensationStillRetryingRefundsThePaymentInsteadOfDroppingIt`,
+  drives a saga to `COMPENSATING_INVENTORY` (timeout fired, `RELEASE_INVENTORY` commanded, reply not
+  yet processed) and asserts the late reply now produces a `RefundPayment` outbox record. Full
+  `saga-orchestrator` module `./mvnw verify` green after the fix (all pre-existing tests plus the new
+  one), Spotless/Checkstyle clean.
+- **Remediation of the live data:** the two affected orders (and the co-occurring INV-ORD-02/
+  INV-SAGA-02 violations from the same load-test window) existed only on this session's own local
+  kind cluster, itself created from scratch this phase — not a shared or production environment.
+  Rather than hand-remediate three specific rows, the Postgres and Mongo PVCs were deleted and
+  recreated fresh (`kubectl delete pvc data-postgres-0 data-mongo-0`, same "down -v + reseed"
+  posture CONTEXT.md's Phase 12 Next Steps already established for stale-data cleanup), the fixed
+  `saga-orchestrator` image rebuilt/reloaded/redeployed, and the cluster re-verified clean from a
+  genuinely empty state.
+- **Status:** Fixed. Re-verified live end to end after the data reset: `conveyor-verifier` reports
+  15/15 invariants clean; `KindE2ESmokeTest`'s three scenarios (happy path, insufficient-stock
+  compensation, forced-payment-decline compensation) all pass again against the fixed image.
+
+---
+
+## [BUG-0035] Every production image shipped a ~20MB Testcontainers/docker-java payload, including three HIGH/CRITICAL CVEs, since Phase 1
+- **Date:** 2026-09-11
+- **Phase:** Phase 13 — Containerization and Kubernetes (local); found by this phase's own Trivy
+  exit criterion, the first time any image's actual contents were inspected rather than just built.
+- **Severity:** High — real CVE exposure (one CRITICAL: Tomcat security-constraint bypass,
+  CVE-2026-65182) shipped in every one of the six production containers since the very first
+  `docker compose up` in Phase 1, invisible to `mvnw dependency:tree` and to every prior phase's
+  live verification because none of it inspected image contents, only behavior.
+- **Symptom:** `trivy image --severity HIGH,CRITICAL --ignore-unfixed conveyor/order-service:local`
+  reported 5 alpine-package findings plus 6 Java findings, 3 of them CRITICAL — including
+  `org.apache.httpcomponents.core5:httpcore5` at version **5.0.2**, an artifact with no entry
+  anywhere in `mvnw dependency:tree`'s output for any service.
+- **Root cause:** three independent issues, all found via the one Trivy run:
+  1. `conveyor-common/pom.xml` declares Testcontainers **compile-scope on purpose** (its own
+     comment: "exposed transitively so every service's own Testcontainers tests... can spin up the
+     same Postgres/Kafka images without redeclaring them") — a deliberate Phase 1 decision that
+     works exactly as intended for tests, but "compile scope" also means Spring Boot's `repackage`
+     goal bundles it into the *executable* jar. `unzip -l order-service.jar` confirmed
+     `testcontainers-1.20.4.jar` (17.8MB) plus `docker-java-api`/`docker-java-transport`/
+     `docker-java-transport-zerodep`/`jna` sitting in `BOOT-INF/lib` of a **production** image.
+  2. The vulnerable `httpcore5:5.0.2` is shaded *inside* `docker-java-transport-zerodep-3.4.0.jar`
+     itself (confirmed by extracting it and finding `org/apache/hc/core5` class files with no
+     matching Maven coordinate anywhere in the reactor) — explaining why it was invisible to
+     `dependency:tree`, which only walks declared Maven coordinates, not classes shaded inside a
+     dependency's own jar.
+  3. Separately, `spring-boot-starter-parent:3.5.16` itself still pins `tomcat-embed-core:10.1.55`
+     and `postgresql:42.7.11`, both since superseded by CVE fixes upstream — unrelated to (1)/(2),
+     just never checked before this phase.
+- **Fix:** root `pom.xml`'s `spring-boot-maven-plugin` `pluginManagement` now sets
+  `excludeGroupIds` to `org.testcontainers,com.github.docker-java,net.java.dev.jna` — the
+  repackage goal drops them from the executable jar only; the compile/test classpath (and every
+  service's own Testcontainers-backed integration-test suite) is completely unaffected, verified by
+  a full `./mvnw verify` afterward. `tomcat.version`/`postgresql.version` properties overridden to
+  `10.1.59`/`42.7.12` (10.1.58, Trivy's own reported fix version, was never published to Maven
+  Central; `.59` carries the same fix). Alpine's own `libcrypto3`/`libssl3`/`libexpat` pinned to
+  their fixed patch releases in every Dockerfile's final stage (pinned exact versions, not a bare
+  `apk upgrade`, which would have reintroduced the same non-determinism this phase's reproducible-
+  build work — BUG-0030 — exists to rule out).
+- **Status:** Fixed. Re-verified live: `trivy image --severity HIGH,CRITICAL --ignore-unfixed
+  conveyor/order-service:local` → **0 alpine findings, 0 jar findings**, `unzip -l` confirms no
+  `testcontainers`/`docker-java`/`jna` jars remain in the repackaged image.
+
+---
+
+## [BUG-0034] Helm-managed Deployment's `.spec.replicas` conflicted with the HPA controller's field ownership on the very next upgrade
+- **Date:** 2026-09-11
+- **Phase:** Phase 13 — Containerization and Kubernetes (local)
+- **Severity:** Medium — blocked every subsequent `helm upgrade` against the release outright,
+  not just a cosmetic warning.
+- **Symptom:** `helm upgrade --install conveyor ...` (server-side apply, Helm 4's default) failed:
+  `conflict occurred while applying object conveyor/order-service apps/v1, Kind=Deployment: Apply
+  failed with 1 conflict: conflict with "kube-controller-manager" with subresource "scale" using
+  apps/v1: .spec.replicas`.
+- **Root cause:** order-service is the one Deployment with an HPA (`infra/helm/conveyor/templates/
+  app/hpa.yaml`). The HPA controller's periodic reconciliation writes `.spec.replicas` via the
+  `scale` subresource under its own field-manager identity (`kube-controller-manager`) the moment it
+  first evaluates the Deployment — regardless of whether the replica count actually changes.
+  Helm's own server-side apply, on the *next* release, also tries to own that same field (the
+  Deployment template unconditionally set `replicas: {{ $svc.replicaCount }}`), and two field
+  managers claiming the same field is exactly what server-side apply's conflict detection exists to
+  catch.
+- **Fix:** the Deployment template now omits `replicas:` entirely for any service with
+  `hpa.enabled: true` (`infra/helm/conveyor/templates/app/deployment.yaml`) — a brand-new Deployment
+  defaults to 1 replica with the field absent, and thereafter only the HPA ever sets it, so there is
+  nothing left for Helm to contest. The four non-HPA services are unaffected (`replicas:` still set,
+  since nothing else claims that field for them).
+- **Status:** Fixed. Re-verified live: `helm upgrade --install conveyor ...` succeeded immediately
+  after, `REVISION: 3`, `STATUS: deployed`.
+
+---
+
+## [BUG-0033] Kubernetes could not verify `runAsNonRoot` against a symbolic Dockerfile `USER`
+- **Date:** 2026-09-11
+- **Phase:** Phase 13 — Containerization and Kubernetes (local)
+- **Severity:** High — every one of the six app pods was stuck in `CreateContainerConfigError`,
+  0/6 services schedulable.
+- **Symptom:** `kubectl -n conveyor describe pod order-service-...` → `Error: container has
+  runAsNonRoot and image has non-numeric user (conveyor), cannot verify user is non-root`, repeated
+  for all six Deployments/the CronJob alike.
+- **Root cause:** every Dockerfile's final stage sets `USER conveyor:conveyor` (a symbolic name from
+  `addgroup -S conveyor && adduser -S conveyor -G conveyor`). Docker itself resolves this fine at
+  container-run time, but the kubelet's admission-time `runAsNonRoot` check
+  (`infra/helm/conveyor/templates/_helpers.tpl`'s `conveyor.securityContext`) can only verify a
+  *numeric* UID against the image config — a symbolic username requires resolving `/etc/passwd`
+  inside the image, which the kubelet deliberately does not do for this check. This gap doesn't
+  exist in docker-compose, which never enforces `runAsNonRoot` at all — so it was invisible through
+  12 prior phases of live compose verification.
+- **Fix:** `USER 100:101` (numeric) in all six Dockerfiles — the exact UID/GID Alpine's
+  `addgroup -S`/`adduser -S` already assigned (confirmed via `docker run --entrypoint /bin/sh
+  ... -c id`), just spelled out numerically instead of by name. No behavior change; same user, same
+  permissions.
+- **Status:** Fixed. Re-verified live: all six pods reached `1/1 Running` after rebuilding and
+  reloading the images.
+
+---
+
+## [BUG-0032] Strimzi Kafka CR specified an unsupported Kafka version for the pinned operator release
+- **Date:** 2026-09-11
+- **Phase:** Phase 13 — Containerization and Kubernetes (local)
+- **Severity:** Low — caught immediately by the Kafka CR's own status condition, before anything
+  downstream depended on it.
+- **Symptom:** `kubectl -n conveyor get kafka conveyor-kafka` never left `NotReady`:
+  `"Unsupported Kafka.spec.kafka.version: 3.9.0. Supported versions are: [4.2.0, 4.2.1, 4.3.0,
+  4.3.1]"`.
+- **Root cause:** `infra/k8s/kafka/kafka-cluster.yaml` was hand-adapted from Strimzi's own
+  `kafka-with-dual-role-nodes.yaml` example for the pinned 1.2.0 operator release, and the adaptation
+  substituted a stale Kafka version (3.9.0) instead of keeping the example's own 4.3.1 — Strimzi 1.2.0
+  only ships broker code for the four 4.x versions listed above.
+- **Fix:** `spec.kafka.version: 4.3.1`, `metadataVersion: 4.3-IV0` (the example's original values).
+  Verified live: the Kafka CR reached `status.conditions[0].type: Ready` within ~2 minutes of
+  reapplying, dual-role broker pod and entity-operator pod both `Running`.
+- **Status:** Fixed.
+
+---
+
+## [BUG-0031] Strimzi operator Deployment (and its ServiceAccount/ConfigMap/RoleBindings) landed in the wrong namespace
+- **Date:** 2026-09-11
+- **Phase:** Phase 13 — Containerization and Kubernetes (local)
+- **Severity:** Medium — silently broke the entire Kafka bring-up step; `scripts/kind-up.sh`'s own
+  next command (`kubectl -n conveyor rollout status deployment/strimzi-cluster-operator`) failed
+  loudly rather than hanging, so this was caught immediately, not downstream.
+- **Symptom:** `kubectl -n conveyor rollout status deployment/strimzi-cluster-operator` →
+  `Error from server (NotFound): deployments.apps "strimzi-cluster-operator" not found`, even though
+  `kubectl apply -f infra/k8s/strimzi/strimzi-cluster-operator-1.2.0.yaml` reported
+  `deployment.apps/strimzi-cluster-operator created` with no error.
+- **Root cause:** the downloaded Strimzi install manifest only carries an explicit `namespace:` field
+  on the handful of resources the standard `sed 's/namespace: myproject/namespace: conveyor/'`
+  rewrite targets (RoleBindings whose *subjects* reference the operator's namespace) — the
+  Deployment, its ServiceAccount, its ConfigMap, and several RoleBindings have no `namespace:` field
+  at all in the upstream manifest, so `kubectl apply -f` without `-n` put them in kubectl's
+  *current-context* default namespace (`default`) instead. The ClusterRoleBindings' subjects (already
+  correctly rewritten to `conveyor`) then pointed at a ServiceAccount that didn't exist there, and the
+  Deployment never started serving from the namespace anything else in this chart looks for it in.
+- **Fix:** `kubectl apply -n "$NAMESPACE" -f "$STRIMZI_MANIFEST"` (`scripts/kind-up.sh`) — passing
+  `-n` makes every unqualified resource in the manifest land in `conveyor` too, matching the ones that
+  already had an explicit namespace. Verified live: operator Deployment reached `1/1 Ready` in
+  `conveyor`, and the subsequent Kafka CR (BUG-0032) then reconciled successfully.
+- **Status:** Fixed.
+
+---
+
+## [BUG-0030] Docker BuildKit's default provenance attestation defeats "same commit -> same image digest"
+- **Date:** 2026-09-11
+- **Phase:** Phase 13 — Containerization and Kubernetes (local)
+- **Severity:** Low — the underlying image layers and config were already byte-identical; only the
+  manifest-list digest (and therefore the locally-tagged image ID) differed.
+- **Symptom:** Building the identical `order-service/Dockerfile` at the identical commit twice, with
+  `pom.xml`'s new `project.build.outputTimestamp` already fixing the jar's own internal timestamps
+  and `--build-arg SOURCE_DATE_EPOCH` fixing COPY'd file mtimes, still produced two different
+  `docker inspect --format='{{.Id}}'` values (`sha256:784640c4...` vs `sha256:63a1a0d3...` on a
+  cache-hit rebuild). `docker buildx build`'s default output attaches a provenance/SBOM attestation
+  manifest that embeds the real wall-clock build time — that attestation's own digest differed
+  between runs even though the underlying single-platform image manifest digest
+  (`sha256:4fd3e7220d...`) and config digest were already identical both times.
+- **Root cause:** BuildKit (Docker 29.7.2's default builder) auto-attaches build provenance since
+  several releases back; that attestation is not covered by `SOURCE_DATE_EPOCH` or
+  `project.build.outputTimestamp` at all, since it describes the build process, not the image content.
+- **Fix:** `docker build --provenance=false --build-arg SOURCE_DATE_EPOCH=1704067200 ...`
+  (`scripts/kind-up.sh`'s image-build step). Verified live: two back-to-back builds of the identical
+  Dockerfile with this flag produced the identical `docker inspect --format='{{.Id}}'` value
+  (`sha256:4fd3e7220d89633733558000da6c803701aaafeed07eb9a0c71391272cc21b6b`) both times.
+- **Status:** Fixed.
+
+---
+
 ## [BUG-0029] k6 load-test harness: refresh-token cookie silently dropped when addressing the stack by Docker's internal (dot-less) service hostname
 - **Date:** 2026-09-11
 - **Phase:** Phase 12 — Load test (harness bug, found via the first 30-minute soak run)

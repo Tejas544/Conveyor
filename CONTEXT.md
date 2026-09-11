@@ -1,13 +1,13 @@
-# Context — Last updated: 2026-09-11 (Phase 12 complete)
+# Context — Last updated: 2026-09-11 (Phase 13 complete)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 13 — Containerization and Kubernetes (local) (not started).** Phase 12
-closed this session, human sign-off received to proceed ("Start Phase 12 — go
-ahead as planned").
+**Phase 14 — CI/CD and deployment (not started).** Phase 13 closed this
+session, human sign-off received to proceed ("Start Phase 13 — go ahead as
+planned").
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -393,10 +393,83 @@ ahead as planned").
   under a sudden burst, not order loss.
   <br>Full writeup, the 7-step ramp table, both trace breakdowns, and resource-usage tables all in
   `RESULTS.md`'s Phase 12 section.
+- Phase 13 — Containerization and Kubernetes (local) ✅ (2026-09-11). `scripts/kind-up.sh`
+  (`make kind-up`): a 3-node kind cluster (1 control-plane + 2 workers, reused as-is by Phase 15),
+  Calico (kindnetd does not enforce `NetworkPolicy` at all — see Key Decisions Log), metrics-server
+  (`--kubelet-insecure-tls`, kind-specific), Strimzi 1.2.0 (KRaft, single dual-role node,
+  `infra/k8s/kafka/`), then `infra/helm/conveyor` — one values-driven chart: Deployments for all
+  five app services + Postgres/Mongo StatefulSets + the conveyor-verifier CronJob (superseding
+  Phase 10's standalone `infra/k8s/conveyor-verifier-cronjob.yaml` illustration) + two seed Jobs
+  (Helm post-install hooks, same idempotent `make seed` images). Every Deployment/StatefulSet/
+  CronJob has explicit `resources.requests/limits`, grounded in RESULTS.md's Phase 12
+  `process_cpu_usage` measurements (not guessed — see `values.yaml`'s own comment for the
+  per-service numbers and reasoning), `readOnlyRootFilesystem: true` (`/tmp` as an `emptyDir`),
+  liveness/readiness/startup probes off the existing Actuator groups, a `PodDisruptionBudget` per
+  Deployment, and an `HorizontalPodAutoscaler` on order-service (CPU — saga-orchestrator's
+  custom-metric one is Phase 15's, not pre-empted here). `NetworkPolicy` restricts Mongo to its two
+  real consumers and Postgres to the Conveyor app tier as a whole (the practical limit given one
+  shared Postgres instance — ARCHITECTURE.md §4), both verified live with positive *and* negative
+  controls (a random unlabeled pod blocked from Postgres; payment-service blocked from Mongo while
+  inventory-service isn't).
+  <br>New `e2e` test class, `KindE2ESmokeTest` (not a rewrite of the existing `ComposeContainer`-
+  based suite — see Key Decisions Log): seeds via the public REST API (login as `admin`, `POST
+  /inventory/{sku}/adjust` on one of the chart's own seeded SKUs) rather than direct JDBC, since
+  kind's Postgres has no NodePort. 3/3 green, run twice (before and after BUG-0036's fix, both
+  green).
+  <br>**Six real bugs found and fixed live this phase** — full detail in BUGS.md:
+  **BUG-0030** (BuildKit's default provenance attestation embeds a real build timestamp, defeating
+  "same commit → same digest" even with jar timestamps already fixed — `--provenance=false`),
+  **BUG-0031** (the Strimzi operator's Deployment/ServiceAccount/ConfigMap have no explicit
+  `namespace:` field in the upstream manifest and landed in `default` instead of `conveyor` —
+  `kubectl apply -n conveyor`), **BUG-0032** (a stale Kafka version, 3.9.0, copied into
+  `kafka-cluster.yaml` from an older example — Strimzi 1.2.0 only supports the 4.x line, `4.3.1`),
+  **BUG-0033** (Kubernetes' `runAsNonRoot` admission check cannot verify a symbolic Dockerfile
+  `USER conveyor:conveyor` — every pod was stuck `CreateContainerConfigError` until it became
+  numeric, `USER 100:101`), **BUG-0034** (Helm's server-side apply and the HPA controller's own
+  scale-subresource writes both claiming `order-service`'s `.spec.replicas` blocked every
+  `helm upgrade` after the HPA's first reconcile — the field is now omitted from the template
+  entirely for any HPA-owned Deployment), and **BUG-0035** (Trivy — this phase's own exit criterion
+  — found every production image had shipped a ~20MB Testcontainers/docker-java payload since
+  Phase 1, including a CRITICAL Tomcat CVE shaded inside a jar invisible to `dependency:tree`;
+  fixed via `spring-boot-maven-plugin`'s `excludeGroupIds`, Alpine packages pinned to exact patched
+  versions, `tomcat`/`postgresql` version properties bumped — all six images now scan clean, full
+  reactor `./mvnw verify` still green afterward, 9/9 modules).
+  <br>**BUG-0036, the significant one** — found live by this phase's own HPA synthetic-load test
+  (20 concurrent order-placement loops for 3 minutes), not a designed chaos scenario: a real,
+  previously-unknown gap in Phase 11's BUG-0027 fix. That fix only refunded a late `PaymentCharged`
+  reply when the saga had already reached the terminal `ABORTED` state; under this phase's load,
+  `RELEASE_INVENTORY` compensation took three retries over ~7 real minutes before reaching it, and a
+  late reply arriving mid-compensation (`COMPENSATING_INVENTORY`) was silently dropped instead —
+  "payment still CAPTURED on a CANCELLED order" (INV-ORD-03), exactly ARCHITECTURE.md §14's
+  most-dangerous label. Fixed immediately (`CLAUDE.md` §2.7): the late-reply check now covers every
+  state reachable *because of* a `CHARGE_PAYMENT` timeout (`ABORTED`, `COMPENSATING_INVENTORY`,
+  `NEEDS_INTERVENTION`), not just the terminal one, with a new regression test. The three affected
+  orders existed only on this session's own from-scratch kind cluster; remediated by wiping and
+  recreating the Postgres/Mongo PVCs (same "down -v + reseed" posture as Phase 12's own Next Steps)
+  rather than hand-fixing three rows, then re-verified clean from empty.
+  <br>**HPA dry run, live:** the same load test that found BUG-0036 also satisfied this phase's own
+  exit criterion — order-service scaled 1→5 (max) under load (`cpu: 379%/60%`), then back to 1
+  within the default 5-minute scale-down stabilization window once load stopped.
+  <br>**Trivy, final state:** all six images — 0 alpine findings, 0 jar findings (HIGH/CRITICAL,
+  unfixed-ignored), verified individually per image after BUG-0035's fix.
+  <br>**Reproducibility, final state:** two back-to-back builds of the final Dockerfile state
+  (digest-pinned base, `project.build.outputTimestamp`, `--provenance=false`, pinned Alpine package
+  versions) produce byte-identical `docker inspect --format='{{.Id}}'` output.
+  <br>**Self-heal, live:** `kubectl delete pod` on each of the five app services plus Postgres and
+  Mongo, in turn — every one self-healed to `Running`/`1/1`, and the very next `conveyor-verifier`
+  run after each reported 15/15 invariants clean.
+  <br>**Environment note (this machine, new this phase):** kind's own resource overhead (3 full
+  node containers, each running kubelet+containerd+Calico+kube-proxy) is measurably higher than
+  docker-compose's flat container list — running a heavy `./mvnw verify` reactor concurrently with
+  the kind cluster up caused sustained elevated CPU (100-150%+ on the busiest node container) for
+  over 20 minutes after the Maven process itself exited, enough to make `conveyor-verifier`'s own
+  90s `activeDeadlineSeconds` (raised from Phase 10's 45s for exactly this reason) miss repeatedly
+  until it settled. Same underlying lesson as the existing docker-compose-vs-verify note below, now
+  with kind added to the "don't run a heavy Testcontainers reactor at the same time" list.
 
 ## In Progress
-- **Nothing mid-flight.** Phase 12 closed cleanly this session. Phase 13 (Containerization and
-  Kubernetes, local) has not started — see Next Steps.
+- **Nothing mid-flight.** Phase 13 closed cleanly this session. Phase 14 (CI/CD and deployment) has
+  not started.
 
 ## Blockers
 - **None currently open.** BUG-0007 (disk space) is resolved via the data-root
@@ -410,24 +483,24 @@ ahead as planned").
   connecting from the host shell via a bare `psql -h localhost -p 5432` does
   not.
 - **Environment note (this machine):** running a live `docker compose
-  --profile observability up` stack *at the same time* as `./mvnw verify`
-  starves the Testcontainers-heavy Surefire forks badly enough to crash a
-  fork outright (hit twice this session before the pattern was recognized) —
-  always tear down any live compose stack before a full `verify` run here.
+  --profile observability up` stack, **or a live kind cluster (new this
+  phase)**, *at the same time* as `./mvnw verify` starves the
+  Testcontainers-heavy Surefire forks (and, for kind, the cluster's own
+  control-plane responsiveness) badly enough to cause real problems — always
+  tear down any live compose stack or kind cluster before a full `verify` run
+  here, or budget real settling time afterward if you don't.
 
 ## Next Steps
-1. **Phase 13 — Containerization and Kubernetes (local).** Hardened
-   Dockerfiles, one Helm chart with **resource requests/limits on every
-   deployment** (`CLAUDE.md` §7 — required for Phase 15's autoscaling
-   measurement to mean anything; also directly informed by Phase 12's own
-   finding that no service is CPU-bound today, so requests should be set from
-   observed usage, not guessed), Strimzi Kafka + Postgres + Mongo for the
-   local cluster, `kind`/`k3d` bring-up, an HPA dry run. A natural first
-   candidate once Helm values are in place: raise `SagaReplyListener`'s
-   listener `concurrency` above Spring Kafka's default of 1 and re-run
-   Phase 12's ramp scenario to confirm the knee moves — Phase 12 named and
-   trace-evidenced the bottleneck but deliberately did not apply the fix
-   speculatively mid-rigor-phase (see RESULTS.md's Phase 12 section).
+1. **Phase 14 — CI/CD and deployment.** `git push` → build → test → containerize
+   → GHCR → fresh kind cluster inside the GitHub Actions runner → `helm install`
+   → smoke test → invariant-check gate; Terraform for the AWS fallback path
+   written and `plan`-validated only, never `apply`'d (ADR-13). A natural first
+   candidate once Phase 13's Helm chart is CI-exercised: raise
+   `SagaReplyListener`'s listener `concurrency` above Spring Kafka's default of
+   1 and re-run Phase 12's ramp scenario to confirm the knee moves — Phase 12
+   named and trace-evidenced the bottleneck but deliberately did not apply the
+   fix speculatively mid-rigor-phase (see RESULTS.md's Phase 12 section);
+   Phase 13 didn't either, for the same reason.
 2. Consider revisiting `chaos/run_matrix.py`'s inter-repetition pacing for
    the same injection point (BUG-0025's remaining, accepted limitation — see
    RESULTS.md's "harness pacing limitation" note) if the chaos matrix is ever
@@ -440,13 +513,10 @@ ahead as planned").
    (Phase 9) at least gives it a Prometheus/Grafana/alert signal now; the
    dashboard itself still has no live push for it, only
    `GET /sagas?state=&stuck=true` polling.
-4. The 10 pre-existing `conveyor-verifier` violations (9× `INV-DSP-01`, 1×
-   `INV-ORD-01`) noted as stale/already-resolved throughout Phase 12's own
-   session (confirmed clean in the checker's live report both before and
-   after this phase's load runs, and the counter never moved) are worth a
-   deliberate `docker compose down -v` + reseed before Phase 13 begins, so
-   Phase 13's own live checks start from a demonstrably clean volume rather
-   than one carrying dead counters from Phase 10/11's chaos-matrix history.
+4. Phase 13's kind cluster (and its Strimzi/Calico/metrics-server installs) is
+   left running from this session — `./scripts/kind-down.sh` tears it down
+   when no longer needed for demo purposes; nothing about it costs anything
+   (ARCHITECTURE.md §15, ADR-13), so there's no urgency either way.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -465,6 +535,73 @@ ahead as planned").
 
 ## Key Decisions Log
 
+- **Phase 13 — Calico replaces kind's default CNI (kindnetd).** `NetworkPolicy` is a named PLAN.md
+  deliverable, but kindnetd does not enforce `NetworkPolicy` at all — every policy in
+  `infra/helm/conveyor/templates/networkpolicy.yaml` would have been silently decorative on it.
+  `infra/k8s/kind-config.yaml` sets `disableDefaultCNI: true` + a Calico-matching `podSubnet`;
+  `scripts/kind-up.sh` applies `infra/k8s/calico/calico.yaml` right after cluster creation. Verified
+  actually enforcing, not just installed: a positive control (order-service → Postgres, succeeds)
+  and two negative controls (an unlabeled pod → Postgres, times out; payment-service → Mongo, times
+  out while inventory-service's own succeeds).
+- **Phase 13 — `NetworkPolicy` restricts Postgres to "the Conveyor app tier," not per-service.**
+  ARCHITECTURE.md §4 puts all five services on one shared Postgres instance (logical isolation via
+  roles/grants since Phase 2, not physical separation) — a `NetworkPolicy` has no notion of "which
+  database a connection will authenticate into," so "restrict order-service to its own datastore"
+  cannot be expressed any finer than this at the network layer. Mongo is different and *is*
+  restricted for real (only inventory-service, dispatch-service, and the seed Job that shares
+  inventory-service's write path) since it has genuinely distinct consumers. Recorded in
+  `networkpolicy.yaml`'s own header comment as well, not just here.
+- **Phase 13 — Kafka (Strimzi) is applied via `kubectl`, not templated into the Helm chart.** An
+  operator-owned resource (the Kafka cluster, its CRDs, the Strimzi operator itself) shouldn't be
+  torn down by an app-scoped `helm uninstall`, the same reasoning that already keeps Postgres/Mongo
+  StatefulSets *inside* the chart (they're this project's own data, not another operator's) while
+  Kafka stays outside it. `scripts/kind-up.sh` applies Strimzi + the Kafka CR + topics before
+  `helm install` runs; the chart's `values.yaml` just points at the resulting bootstrap Service name.
+- **Phase 13 — HPA on order-service only; saga-orchestrator's custom-metric HPA stays disabled.**
+  PLAN.md's own Phase 15 deliverable is "HPA on saga-orchestrator (custom metric:
+  `conveyor_saga_active`, via prometheus-adapter) and on order-service (CPU) — one
+  infrastructure-metric and one application-metric autoscaler, because they behave differently."
+  Wiring saga-orchestrator to CPU now as a stand-in would make Phase 15 look "already done" under
+  the wrong metric; Prometheus isn't even deployed to kind in this phase (out of scope — Prometheus/
+  Grafana/Tempo stay docker-compose's `--profile observability` job here), so a real custom-metric
+  HPA isn't buildable yet regardless. `values.yaml`'s own comment records this rather than silently
+  leaving it unexplained.
+- **Phase 13 — a Deployment fronted by an HPA omits `.spec.replicas` entirely, rather than setting
+  it to match `replicaCount`.** Found the hard way (BUG-0034): the HPA controller's own
+  scale-subresource writes and Helm's server-side apply both claiming the same field produced a real
+  `helm upgrade` failure the moment the HPA first reconciled. Omitting the field lets Kubernetes
+  default a fresh Deployment to 1 replica at creation and leaves the HPA as the field's only writer
+  from then on — the standard fix for this well-known Helm+HPA interaction, not specific to this
+  project.
+- **Phase 13 — `KindE2ESmokeTest` is a new, parallel test class, not a refactor of the existing
+  `ComposeContainer`-based E2E suite.** The three existing classes (`HappyPathAndInventoryCompensationE2ETest`
+  et al.) each own a `ComposeContainer` that brings up its *own* fresh stack — correct for the
+  default `mvn -f e2e/pom.xml verify -DskipE2E=false` path (Phase 7), wrong for driving an
+  already-running external kind cluster. Retrofitting conditional logic into already-green,
+  correctness-sensitive tests to skip `ComposeContainer` under some condition was judged riskier
+  than a new class reusing the same support code (`RestClient`, unchanged) with plain NodePort URLs
+  — gated behind `E2EnabledIfEnvironmentVariable(named = "E2E_TARGET", matches = "kind")` so it never
+  runs as a side effect of the default suite. Seeds via the public REST API (login + `POST
+  /inventory/{sku}/adjust` on a chart-seeded SKU) rather than direct JDBC, since kind's Postgres has
+  deliberately no NodePort — arguably a more representative test of the real admin workflow than
+  direct DB seeding ever was.
+- **Phase 13 — resource requests/limits are grounded in RESULTS.md's Phase 12 `process_cpu_usage`
+  numbers, not guessed**, per CONTEXT.md's own Phase 12 Next Steps note calling for exactly this.
+  `conveyor-verifier`'s limits specifically were *raised* from Phase 10's original guess (500m CPU/
+  512Mi memory) once Phase 12's own soak run showed it living peaking at ~0.76 cores / 453MB under
+  real load — a correction using data that didn't exist when Phase 10 wrote the original numbers,
+  not a contradiction of them.
+- **Phase 13 — BUG-0036 (a genuine financial-integrity defect, found via this phase's HPA load test
+  rather than a designed chaos scenario) was fixed immediately, in the same session, with the
+  affected live data remediated by a full Postgres/Mongo PVC wipe + reseed rather than hand-fixing
+  three rows.** Consistent with `CLAUDE.md` §2.7 and this project's own established practice for
+  this severity class (BUG-0026/0027 in Phase 11 were handled the same way): a real "customer
+  charged, never refunded" finding does not wait for a future phase. The PVC wipe, not manual
+  remediation, was chosen because this is a from-scratch local kind cluster created this same
+  session — not shared or production state — making a clean reset both faster and more convincing
+  than three individually-verified manual fixes, and matching the "down -v + reseed" posture
+  CONTEXT.md's own Phase 12 Next Steps had already called for before Phase 13 began (for unrelated
+  stale-counter reasons).
 - **Phase 12 — the end-to-end saga-completion-latency metric polls
   `GET /orders/{id}` every 0.5s, not the SSE stream** PLAN.md's own wording
   parenthetically suggested ("HTTP 202 to `CONFIRMED` (polling the SSE
