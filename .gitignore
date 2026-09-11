@@ -43,6 +43,9 @@ kubeconfig*
 *.tfstate.backup
 .terraform.lock.hcl
 
-# Test/tooling output
+# Test/tooling output — RESULTS.md is the durable, curated record; raw per-run trial
+# data is regeneratable (`python3 chaos/run_matrix.py`) and not meant for version control.
 /chaos/results/*.json
+/chaos/results/*.jsonl
+/chaos/__pycache__/
 /RESULTS.local.md

@@ -1,4 +1,4 @@
-.PHONY: up down logs build test verify seed reset ps observability-up observability-down invariant-check
+.PHONY: up down logs build test verify seed reset ps observability-up observability-down invariant-check chaos-matrix
 
 up:
 	docker compose up -d --build
@@ -48,3 +48,9 @@ seed:
 # alongside the always-on conveyor-verifier sidecar, it does not replace it.
 invariant-check:
 	docker compose run --rm -e SPRING_PROFILES_ACTIVE=oneshot conveyor-verifier
+
+# PLAN.md Phase 11: the chaos matrix. Needs the stack already up and seeded (`make up && make
+# seed`). Takes on the order of an hour for the full matrix; pass QUICK=1 for a 1-repetition,
+# no-broker-fault smoke run while iterating on the harness itself.
+chaos-matrix:
+	python3 chaos/run_matrix.py $(if $(QUICK),--quick,)

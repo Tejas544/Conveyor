@@ -1,0 +1,22 @@
+# PLAN.md Phase 11: used only during a chaos matrix run —
+#   docker compose -f docker-compose.yml -f chaos/docker-compose.chaos-override.yml up -d --build
+#
+# The default stack sets `restart: unless-stopped` on every app service (docker-compose.yml's
+# x-service-defaults), which is exactly wrong for a controlled chaos trial: ChaosGate.maybeCrash
+# calls Runtime.halt(1), and if the crashed container's env is still armed when Docker's restart
+# policy relaunches it a fraction of a second later, the redelivered message hits the same code
+# path again and it crashes forever — an unbounded loop, not one observable, reproducible fault.
+# `restart: "no"` here lets a crashed container stay exited so chaos/run_matrix.py can confirm the
+# crash actually happened, then explicitly bring it back up with chaos disarmed — the same shape a
+# real orchestrator's supervisor loop would have, just driven by hand instead of Kubernetes.
+services:
+  order-service:
+    restart: "no"
+  inventory-service:
+    restart: "no"
+  payment-service:
+    restart: "no"
+  saga-orchestrator:
+    restart: "no"
+  dispatch-service:
+    restart: "no"
