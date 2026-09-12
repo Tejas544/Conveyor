@@ -22,9 +22,12 @@ imagePullSecrets: []
 # CorsProperties/SecurityAutoConfiguration. Defaulted to the project's actual Pages origin (not
 # empty) so `make kind-up` alone leaves a stack the permanent Pages URL can reach immediately,
 # matching this chart's existing "helm install alone leaves a demoable stack" posture (seed.enabled
-# above). Override with --set corsAllowedOrigins="" to lock it back down. Comma-separated (Spring's
+# above). `http://localhost:5173` added alongside it (BUG-0051, Phase 16) -- the frontend's own
+# `npm run dev` (Vite, proxied to these same NodePorts) hits this cluster exactly the same way
+# docker-compose's identical default now does, and was silently broken the same way before this
+# fix. Override with --set corsAllowedOrigins="" to lock it back down. Comma-separated (Spring's
 # relaxed binding for a List<String> env var).
-corsAllowedOrigins: "https://tejas544.github.io"
+corsAllowedOrigins: "https://tejas544.github.io,http://localhost:5173"
 
 kafka:
   # Strimzi's generated bootstrap Service name (infra/k8s/kafka/kafka-cluster.yaml: Kafka

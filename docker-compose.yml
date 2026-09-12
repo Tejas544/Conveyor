@@ -29,8 +29,16 @@ x-chaos-env: &chaos-env
 # Pages origin, not empty, for the same "leaves a demoable stack with no extra flags" reasoning as
 # infra/helm/conveyor/values.yaml's identical default -- see conveyor-common's
 # CorsProperties/SecurityAutoConfiguration. Override via .env to lock it back down.
+#
+# BUG-0051 (Phase 16, found live verifying README's own "npm run dev against docker compose"
+# quickstart): the Phase 14 default only ever listed the GitHub Pages origin, silently breaking
+# every local `npm run dev` (Vite on http://localhost:5173, proxied to these ports) since that
+# phase -- Spring Security's CorsFilter rejected the login POST outright ("Invalid CORS request"),
+# and nothing caught it because Phase 14's own testing only exercised the Pages<->kind pairing, not
+# this one. localhost:5173 added to the default alongside the Pages origin so both paths work with
+# no extra flags, matching this file's own "demoable with no setup" standard.
 x-cors-env: &cors-env
-  CONVEYOR_SECURITY_CORS_ALLOWED_ORIGINS: ${CONVEYOR_SECURITY_CORS_ALLOWED_ORIGINS:-https://tejas544.github.io}
+  CONVEYOR_SECURITY_CORS_ALLOWED_ORIGINS: ${CONVEYOR_SECURITY_CORS_ALLOWED_ORIGINS:-https://tejas544.github.io,http://localhost:5173}
 
 services:
   postgres:
