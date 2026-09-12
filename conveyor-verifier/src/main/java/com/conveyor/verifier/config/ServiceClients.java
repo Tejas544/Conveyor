@@ -1,11 +1,15 @@
 package com.conveyor.verifier.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
+import org.springframework.boot.http.client.ClientHttpRequestFactorySettings;
+import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
@@ -30,12 +34,42 @@ public class ServiceClients {
 
   @Autowired
   public ServiceClients(VerifierProperties properties) {
+    // BUG-0053 (Phase 16, found live): RestClient.create(baseUrl) with no configured timeout
+    // means a single transiently-unreachable service (e.g. mid-restart, exactly what a real
+    // crash-recovery demo does) hangs the outside-in check -- and therefore the whole oneshot
+    // run, since System.exit() only happens after both modes finish -- indefinitely. A CI-gating
+    // tool that can hang forever instead of failing fast is worse than one that fails cleanly. A
+    // bounded 5s connect/read timeout on every client fixes it: an unreachable service now shows
+    // up as a real, fast "not observable"/error in the outside-in report rather than wedging the
+    // whole run.
+    ClientHttpRequestFactory requestFactory =
+        ClientHttpRequestFactoryBuilder.detect()
+            .build(
+                ClientHttpRequestFactorySettings.defaults()
+                    .withConnectTimeout(Duration.ofSeconds(5))
+                    .withReadTimeout(Duration.ofSeconds(5)));
     VerifierProperties.Http http = properties.http();
-    clients.put("order", RestClient.create(http.orderBaseUrl()));
-    clients.put("inventory", RestClient.create(http.inventoryBaseUrl()));
-    clients.put("payment", RestClient.create(http.paymentBaseUrl()));
-    clients.put("saga", RestClient.create(http.sagaBaseUrl()));
-    clients.put("dispatch", RestClient.create(http.dispatchBaseUrl()));
+    clients.put(
+        "order",
+        RestClient.builder().baseUrl(http.orderBaseUrl()).requestFactory(requestFactory).build());
+    clients.put(
+        "inventory",
+        RestClient.builder()
+            .baseUrl(http.inventoryBaseUrl())
+            .requestFactory(requestFactory)
+            .build());
+    clients.put(
+        "payment",
+        RestClient.builder().baseUrl(http.paymentBaseUrl()).requestFactory(requestFactory).build());
+    clients.put(
+        "saga",
+        RestClient.builder().baseUrl(http.sagaBaseUrl()).requestFactory(requestFactory).build());
+    clients.put(
+        "dispatch",
+        RestClient.builder()
+            .baseUrl(http.dispatchBaseUrl())
+            .requestFactory(requestFactory)
+            .build());
   }
 
   /**
