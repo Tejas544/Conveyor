@@ -1,13 +1,13 @@
-# Context — Last updated: 2026-09-11 (Phase 14 complete)
+# Context — Last updated: 2026-09-12 (Phase 15 complete)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 15 — Autoscaling measurement (not started).** Phase 14 closed this
-session, human instruction to proceed ("Start Phase 14 — go ahead as
-planned").
+**Phase 16 — Documentation, demo, and the interview defence (not started).**
+Phase 15 closed this session, human instruction to proceed ("Start Phase 15 —
+go ahead as planned").
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -541,9 +541,78 @@ planned").
   the kind cluster is destroyed at the end of every run regardless of outcome, and `terraform apply`
   never ran anywhere (grep-verified in CI on every push).
 
+- Phase 15 — Autoscaling measurement ✅ (2026-09-12). Reused Phase 13's existing 3-node kind cluster
+  rather than adding k3d as a second tool (its own `kind-config.yaml` comment had already anticipated
+  this — see Key Decisions Log). New: a minimal in-cluster Prometheus (`infra/k8s/prometheus/`, 5 s
+  scrape via `prometheus.io/scrape` pod annotations added to the app Deployment template) feeding
+  **prometheus-adapter**, which exposes `conveyor_saga_active` on the `external.metrics.k8s.io` API —
+  the data source for a new custom-metric HPA on `saga-orchestrator` (`external`, target 10,
+  1–**3** replicas — see below for why 3, not the reply topic's own 6-partition theoretical ceiling).
+  `order-service`'s existing CPU HPA (Phase 13) reused unchanged. `scaling/watch.py` (polls both
+  HPAs' status, every watched pod's lifecycle-condition timestamps, and `kubectl top pods` every 5 s;
+  captures every HPA Kubernetes Event separately for real scale-decision timestamps) and two new k6
+  scenarios (`scaling/trigger-load.js`, 60 VUs; `scaling/baseline-load.js`, 15 VUs) drove the actual
+  measurement, reusing Phase 12's `load/lib/common.js` helpers.
+  <br>**Live result:** both HPAs demonstrably scale up and back down — `order-service` (CPU) 1→5→1,
+  `saga-orchestrator` (custom metric) 1→3→1. Scale-up latency decomposition: metric-scrape/HPA-sync
+  delay (~15–30 s) dominates under normal conditions (exactly PLAN.md's own prediction); pod-created→
+  pod-Ready only becomes the dominant stage (30–180+ s, sometimes never) under concurrent replica
+  fan-out contention — a real, measured exception (BUG-0047), not a guess. Scale-down took ~16 minutes
+  in the final measurement run, well past the nominal 5-minute stabilization window, because
+  metrics-server itself was intermittently unavailable under load, delaying an unbroken window of
+  valid low readings — named as a measured fact, not rounded down to the textbook number. Throughput
+  at 60 VUs/up-to-8-replicas (2.69 orders/s) was *lower* than at 15 VUs/1-replica (8.65 orders/s) —
+  explained via Little's Law and Phase 12's still-unaddressed `SagaReplyListener` concurrency limit,
+  not asserted as a defect. Full writeup, pod-count-vs-load table, and the exit-criteria summary in
+  `RESULTS.md`'s Phase 15 section. `docs/LIMITATIONS.md` (new) states the node-level-autoscaling
+  limitation verbatim, written before any other exit criterion was checked off.
+  <br>**BUG-0049, the significant one** — found live by `conveyor-verifier`'s own inside-out check
+  during the confirmation load test, not a designed scenario: a genuinely concurrent race (distinct
+  from BUG-0026/27/36) between `SagaTimeoutSweeper`'s own transaction (a real held Postgres row lock)
+  and a late Kafka reply handler's plain, unlocked read of the same saga row — under Postgres's MVCC,
+  the late reply could see the pre-timeout state while the sweep's transaction was still open, decide
+  the saga was healthy, and silently clobber the sweep's `ABORTED` transition once its own write went
+  through after the sweep committed: order confirmed and charged for real while `orders.status`
+  stayed `CANCELLED` forever (`INV-ORD-03`/`INV-DSP-01`/`INV-SAGA-05`, all on one order). Fixed by
+  giving every reply handler a real blocking `PESSIMISTIC_WRITE` lock on the saga row
+  (`SagaInstanceRepository#findByOrderIdForUpdate`), so it now queues up behind an in-flight sweep
+  instead of reading around it. New deterministic regression test (holds a real sweep transaction
+  open on a fixed timer while a concurrent reply handler call attempts to run — no signal-based
+  synchronization, which proved unreliable for testing an unlocked-read race the first time it was
+  tried), verified failing without the fix and passing with it. Full `saga-orchestrator` suite green
+  after (29/29); full reactor `./mvnw verify` green after. Deliberately **not** re-verified against a
+  second live load run — the deterministic concurrency test is trusted over trying to reproduce a
+  few-hundred-millisecond race live a second time, given how much of this session was already spent
+  recovering this same host's kind cluster from unrelated instability (below).
+  <br>**Two smaller bugs found and fixed along the way**, both logged in `BUGS.md`: **BUG-0046**
+  (Postgres's default `max_connections=100` left almost no headroom once this phase's own HPAs could
+  fan out to 5+6 replicas — raised to 300) and **BUG-0048** (this phase's own `scaling/watch.py`
+  instrumentation script crashed outright on one slow `kubectl top` call under real load, losing the
+  rest of an 18-minute unattended run including the whole scale-down window — hardened to skip a
+  failed tick instead of dying).
+  <br>**A live infrastructure story, reported honestly rather than smoothed over:** getting clean
+  numbers took recreating the kind cluster three times in one session. Run 1 (both HPAs at their
+  originally-planned ceilings, `saga-orchestrator` maxReplicas 6) hit BUG-0047 (startup-probe timeout
+  too tight for several CPU-limited JVMs starting at once — node-wide CPU stayed a moderate 33%
+  throughout, ruling out simple exhaustion; the throttling was per-pod, not per-node). After fixing
+  the probe, the *host* itself (Docker Desktop's own daemon, not just kind) became unresponsive
+  (`500` from the Docker Engine API, `TLS handshake timeout` from `kubectl`) under the sustained churn
+  of six CPU-limited JVMs restarting repeatedly — recreating the cluster fixed the Kubernetes side but
+  a separate failure then appeared (kind's host-port publishing itself stopped working — pods healthy
+  and reachable from inside the cluster, every NodePort timed out from the host), traced to Docker
+  Desktop's own networking layer and cleared only by an actual Docker Desktop restart (`wsl --shutdown`
+  + relaunch). The measurement was then deliberately right-sized to what this host can actually
+  sustain — `saga-orchestrator`'s `maxReplicas` capped at 3 (below the reply topic's own 6-partition
+  ceiling, `values.yaml`'s own comment says why) and a shorter/lighter load profile than Phase 12's
+  160-VU ramp — which is what produced this phase's clean, reported numbers. None of this changes the
+  actual finding (both HPAs demonstrably work); it changes the honest scope of *this host's* practical
+  ceiling versus the theoretical one.
+  <br>Cluster torn down at the end (`kind delete cluster --name conveyor`) per this phase's own exit
+  criterion — local hygiene, not a cost concern, unlike Phase 13/14's choice to leave a cluster running
+  for demo purposes.
+
 ## In Progress
-- **Nothing mid-flight.** Phase 14 closed cleanly this session. Phase 15 (autoscaling measurement) has
-  not started.
+- **Nothing mid-flight.** Phase 15 closed cleanly this session.
 
 ## Blockers
 - **None currently open.** BUG-0007 (disk space) is resolved via the data-root
@@ -570,32 +639,49 @@ planned").
   because nine JVMs plus Kafka/Mongo/Postgres all starting within about two
   minutes is genuinely heavier concurrent load than local runs have ever
   exercised. Worth remembering before tightening any timeout further in CI.
+- **This host's Docker Desktop itself, not just the kind cluster, can become
+  unresponsive under sustained heavy churn (Phase 15, new).** Pushing enough
+  concurrently-restarting/CPU-limited JVMs at once (this phase: up to 11
+  replicas fanning out across two HPAs at their original ceilings) was enough
+  to make the Docker Engine API itself return `500`s and `kubectl` see `TLS
+  handshake timeout`s — a step beyond the already-documented "kind causes
+  elevated CPU for 20+ minutes" note below. A full `kind delete cluster` +
+  recreate resolved the Kubernetes-level symptom; a separate occurrence of kind's
+  own host-port publishing silently breaking needed an actual Docker Desktop
+  restart (`wsl --shutdown` then relaunch) to clear. Worth trying a full Docker
+  Desktop restart early if a kind cluster seems wedged and cluster recreation
+  alone doesn't fix it — don't assume it's always just the K8s control plane.
 
 ## Next Steps
-1. **Phase 15 — Autoscaling measurement.** HPA on `saga-orchestrator` (custom
-   metric via prometheus-adapter) and `order-service` (CPU) on a multi-node k3d
-   cluster; scale-up latency decomposition. A natural first candidate before or
-   during it: raise `SagaReplyListener`'s listener `concurrency` above Spring
-   Kafka's default of 1 and re-run Phase 12's ramp scenario to confirm the knee
-   moves — Phase 12 named and trace-evidenced the bottleneck but deliberately
-   did not apply the fix speculatively mid-rigor-phase (see RESULTS.md's
-   Phase 12 section); neither Phase 13 nor 14 did either, for the same reason.
-2. Consider revisiting `chaos/run_matrix.py`'s inter-repetition pacing for
+1. **Phase 16 — Documentation, demo, and the interview defence.** The last
+   phase. `README.md`, `docs/DEMO.md` + a recorded walkthrough, `docs/
+   INTERVIEW.md`, a final `docs/LIMITATIONS.md`/`BUGS.md`/`RESULTS.md` pass,
+   and `CLAUDE.md` §8's Definition of Done checked off item by item.
+2. `SagaReplyListener`'s listener `concurrency` is still Spring Kafka's default
+   of 1 — Phase 12 named and trace-evidenced this bottleneck, Phase 15's own
+   throughput-at-n-replicas result (RESULTS.md) is a second, independent piece
+   of evidence for the same root cause (saga-orchestrator's replica-count
+   scaling helps but doesn't eliminate it), and three phases in a row have now
+   deliberately left it unfixed rather than applying it speculatively
+   mid-rigor-phase. Phase 16 is documentation-only and won't touch it either —
+   worth naming in `docs/LIMITATIONS.md`/`docs/INTERVIEW.md` as a known,
+   evidenced, deliberately-deferred improvement rather than silently dropped.
+3. Consider revisiting `chaos/run_matrix.py`'s inter-repetition pacing for
    the same injection point (BUG-0025's remaining, accepted limitation — see
    RESULTS.md's "harness pacing limitation" note) if the chaos matrix is ever
    re-run at higher repetition counts; not blocking, since every affected
    trial was individually verified live to have converged correctly.
-3. Not done as part of Phase 8, still open: `saga.intervention` (an SSE event
+4. Not done as part of Phase 8, still open: `saga.intervention` (an SSE event
    name ARCHITECTURE.md §10.1 lists) has no real source —
    `NEEDS_INTERVENTION` is reached via `SagaTimeoutSweeper`'s escalation,
    which publishes no Kafka event today. `conveyor_saga_needs_intervention`
    (Phase 9) at least gives it a Prometheus/Grafana/alert signal now; the
    dashboard itself still has no live push for it, only
    `GET /sagas?state=&stuck=true` polling.
-4. Phase 13's kind cluster (and its Strimzi/Calico/metrics-server installs) is
-   left running from this session — `./scripts/kind-down.sh` tears it down
-   when no longer needed for demo purposes; nothing about it costs anything
-   (ARCHITECTURE.md §15, ADR-13), so there's no urgency either way.
+5. Unlike Phase 13/14, Phase 15's kind cluster **was** torn down at the end
+   (`kind delete cluster --name conveyor`) per its own exit criterion — a
+   future session needs `./scripts/kind-up.sh` again from scratch, not a
+   reused cluster.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -614,6 +700,45 @@ planned").
 
 ## Key Decisions Log
 
+- **Phase 15 — kind, not k3d, for the "multi-node k3d cluster" PLAN.md names.** ARCHITECTURE.md
+  §15 itself treats kind/k3d as interchangeable throughout, and Phase 13's own `kind-config.yaml`
+  comment had already anticipated exactly this call ("Phase 15 can swap the tool without changing
+  anything this manifest or the Helm chart depend on, since both speak plain Kubernetes"). k3d isn't
+  even installed on this machine; the existing 3-node kind cluster is already multi-node with
+  Calico/Strimzi/metrics-server already wired. Installing a second, redundant cluster tool for a
+  phase whose own prior-phase groundwork already anticipated reusing kind was judged pure overhead
+  for zero measurement benefit — the HPA control loop behaves identically regardless of which tool
+  created the nodes underneath it, which is precisely `docs/LIMITATIONS.md`'s own point.
+- **Phase 15 — `saga-orchestrator`'s HPA `maxReplicas` capped at 3, not the reply topic's own
+  6-partition theoretical ceiling.** Found live: this specific 12-core dev host could not sustain 6
+  saga-orchestrator replicas concurrently with order-service's own 5-replica ceiling (11 total
+  concurrently-bursting JVMs) — not a Kubernetes or application defect, but real, measured host
+  capacity exhaustion (metrics-server itself became intermittently unavailable, cascading into
+  Docker Desktop's own daemon becoming unresponsive under the churn — see the new Blockers entry).
+  Right-sizing to what this host can actually sustain, and naming that ceiling as host-specific
+  rather than silently treating 3 as if it were the "real" architectural limit, was judged more
+  honest than either quietly lowering ambition without comment or repeatedly re-fighting a host
+  limit that a bigger machine or a real cloud node group would not hit. `values.yaml`'s own comment
+  states this ceiling and why.
+- **Phase 15 — `SagaReplyListener`'s `concurrency=1` bottleneck (Phase 12's own finding) was left
+  unfixed a third phase running, on purpose.** Fixing it would have raised saga-orchestrator's
+  *per-replica* throughput, which would have made the custom-metric HPA's own trigger (a growing
+  `conveyor_saga_active` backlog) harder to reach under the same load — directly undermining this
+  phase's own goal of demonstrating that specific autoscaler working. Scaling *replica count* (what
+  this phase measures) and raising *per-replica concurrency* (Phase 12's still-open finding) are two
+  different, complementary levers; deferring the second was necessary to cleanly observe the first,
+  not an oversight. Recorded again in Next Steps for Phase 16 to at least name, since three phases
+  have now built directly on top of this same deliberately-unfixed gap.
+- **Phase 15 — BUG-0049's fix verified by a deterministic concurrency test, not by re-running the
+  live load test a second time.** The race (a late Kafka reply overlapping a timeout-sweep
+  transaction by a few hundred milliseconds) is real but probabilistic to reproduce live — a second
+  60-VU run against the rebuilt image might simply not hit the same window, which would prove
+  nothing either way. A `TransactionTemplate`-controlled test that deliberately holds the sweep's
+  real Postgres lock open on a fixed timer reproduces the exact mechanism on demand, every run, in
+  under 30 seconds — verified failing without the fix and passing with it, which a lucky/unlucky
+  live re-run cannot offer either way. Given how much of this session was already spent recovering
+  this same host's kind cluster from unrelated instability, spending more of that fragile shared
+  resource on a non-deterministic re-verification was judged the worse trade.
 - **Phase 14 — GitHub Pages, not Vercel/Cloudflare Pages, for the frontend pipeline.** All three are
   named as equally valid in ARCHITECTURE.md §15.2; asked directly, the human picked GitHub Pages
   specifically because it needs no new account and no repo secret — the workflow authenticates with

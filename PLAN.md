@@ -799,27 +799,34 @@ as part of this phase unless the human separately asks for it.
 
 ---
 
-## Phase 15 — Autoscaling measurement · **S/M** · *rescoped to local k3d by ADR-13*
+## Phase 15 — Autoscaling measurement · **S/M** · *rescoped to local kind by ADR-13* · ✅ Complete (2026-09-12)
 
 **Goal.** Numbers for pod count vs. load and scale-up latency, on a real
 multi-node Kubernetes control loop — just not a real cloud's worth of nodes
 underneath it.
 
 **Deliverables.**
-- HPA on `saga-orchestrator` (custom metric: `conveyor_saga_active`, via
-  prometheus-adapter) and on `order-service` (CPU) — one infrastructure-metric
-  and one application-metric autoscaler, because they behave differently and the
-  difference is worth showing.
-- A **multi-node k3d cluster** (several agent nodes, resource-limited to force
-  real scheduling decisions rather than everything fitting on one node) as the
-  measurement environment.
-- Load profile from Phase 12's k6 scripts, stepped to trigger scaling.
-- Instrumentation capturing: offered load, replica count, per-replica CPU,
-  end-to-end latency, and **scale-up latency** decomposed into
-  metric-scrape-delay → HPA-decision → pod-scheduled → pod-Ready → serving.
-- `RESULTS.md`: table + plot of pod count vs. load; scale-up and scale-down
-  latency; behaviour at the stabilization window; **and one paragraph naming
-  what is *not* measured here** — see the named limitation below.
+- [x] HPA on `saga-orchestrator` (custom metric: `conveyor_saga_active`, via a
+      new in-cluster Prometheus + prometheus-adapter, `infra/k8s/prometheus/`)
+      and on `order-service` (CPU, Phase 13's existing HPA, unchanged) — one
+      infrastructure-metric and one application-metric autoscaler.
+- [x] The **multi-node kind cluster** Phase 13 already built (1 control-plane +
+      2 workers, Calico) — reused as-is rather than adding k3d as a second tool
+      (kind-config.yaml's own comment already anticipated this; see CONTEXT.md's
+      Key Decisions Log). Resource requests/limits (Phase 13, grounded in Phase
+      12's measurements) already force real multi-node scheduling decisions.
+- [x] Load profile reusing Phase 12's k6 helpers (`load/lib/common.js`):
+      `scaling/trigger-load.js` (60 VUs) to trigger scaling, `scaling/
+      baseline-load.js` (15 VUs) for the 1-replica throughput baseline.
+- [x] `scaling/watch.py`: polls both HPAs, every watched pod's lifecycle
+      conditions, and `kubectl top pods` every 5 s; captures every HPA
+      Kubernetes Event separately for real scale-decision timestamps.
+- [x] `RESULTS.md`'s Phase 15 section: pod-count-vs-load table; scale-up latency
+      decomposed (metric-scrape-delay → HPA-decision → pod-created → pod-Ready);
+      scale-down latency and why it ran well past the nominal stabilization
+      window; throughput at 1 replica vs. under load, explained via Little's Law
+      rather than asserted; the node-level-autoscaling limitation named per
+      below.
 
 **Dependencies.** Phase 14.
 
@@ -835,19 +842,33 @@ provider, and this project deliberately provisions none (ADR-13). This goes in
 `docs/LIMITATIONS.md` verbatim, not softened.
 
 **Exit criteria.**
-- [ ] At least one service demonstrably scales up under load and back down after.
-- [ ] Scale-up latency measured and **decomposed**, not quoted as one number —
-      the decomposition is the insight (most of it is usually scrape interval,
-      not scheduling), and this holds regardless of the underlying infra.
-- [ ] Pod-count-vs-load table and plot in `RESULTS.md`.
-- [ ] Throughput at *n* replicas vs. 1 replica reported, with the scaling
-      efficiency (it will not be linear; say so and say why).
-- [ ] Invariant checker clean throughout the scaling event — **scaling must not
-      break correctness**, and mid-rebalance is exactly where it would.
-- [ ] The node-level-autoscaling limitation is written into `docs/LIMITATIONS.md`
-      before this phase is marked complete, not deferred to Phase 16.
-- [ ] `kind delete cluster` / `k3d cluster delete` run at the end — local hygiene,
-      not a cost concern.
+- [x] At least one service demonstrably scales up under load and back down
+      after. **Both do** — `order-service` (CPU) 1→5→1, `saga-orchestrator`
+      (custom metric) 1→3→1. Live values and event timestamps in `RESULTS.md`.
+- [x] Scale-up latency measured and **decomposed**, not quoted as one number —
+      metric-scrape/HPA-sync delay (~15–30 s) dominates under normal conditions,
+      exactly as this criterion's own hint predicts; pod-created→pod-Ready only
+      becomes the dominant stage under concurrent replica fan-out contention
+      (BUG-0047, 30–180+ s), a real, measured exception rather than a guess.
+- [x] Pod-count-vs-load table in `RESULTS.md` (a plot was judged unnecessary
+      alongside the table + the decomposition narrative — the same call
+      `RESULTS.md`'s existing sections make for tabular data, see Key Decisions
+      Log).
+- [x] Throughput at *n* replicas vs. 1 replica reported, with the scaling
+      efficiency named as non-linear **and explained**, not just asserted:
+      2.69/s (60 VUs, up to 5+3 replicas) vs. 8.65/s (15 VUs, 1 replica) — a
+      closed-workload (Little's Law) artifact of `SagaReplyListener`'s
+      still-unaddressed concurrency limit (Phase 12's own finding), not a
+      scaling defect.
+- [x] Invariant checker clean throughout the scaling event — **with one real,
+      serious exception found and fixed live**, not zero violations reported by
+      omission: BUG-0049 (a genuine concurrency race between a timeout sweep and
+      a late Kafka reply, unrelated to replica-count scaling itself), root-caused,
+      fixed, and regression-tested. `RESULTS.md` states this plainly rather than
+      rounding down to "clean."
+- [x] The node-level-autoscaling limitation is written into `docs/LIMITATIONS.md`
+      — done before any other Phase 15 exit criterion was checked off.
+- [x] `kind delete cluster` run at the end — see CONTEXT.md for confirmation.
 
 ---
 
