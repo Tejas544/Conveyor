@@ -21,6 +21,14 @@ spec:
       containers:
         - name: postgres
           image: {{ .Values.postgres.image }}
+          # Phase 15: default max_connections=100 leaves almost no headroom once order-service's
+          # HPA scales to its max 5 replicas (5x10 Hikari pool each = 50) alongside the other four
+          # single-replica services (10 each = 40) and conveyor-verifier's periodic 5-database
+          # oneshot connections — found live scaling this cluster for Phase 15's own measurement
+          # (a transient "remaining connection slots are reserved for roles with the SUPERUSER
+          # attribute" failure on a verifier run, see BUGS.md). Headroom, not a real per-connection
+          # cost concern on a local dev host.
+          args: ["postgres", "-c", "max_connections=300"]
           ports:
             - name: postgres
               containerPort: 5432
