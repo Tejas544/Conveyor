@@ -872,42 +872,60 @@ provider, and this project deliberately provisions none (ADR-13). This goes in
 
 ---
 
-## Phase 16 — Documentation, demo, and the interview defence · **M**
+## Phase 16 — Documentation, demo, and the interview defence · **M** · ✅ Complete (2026-09-12)
 
 **Goal.** Make the work legible to someone who was not here — a reviewer, an
 interviewer, or a future session with no memory of this one.
 
 **Deliverables.**
-- Root `README.md`: what it is, the architecture diagram, the 2PC↔Saga
-  throughline, local quickstart, deployment summary, **results table with real
-  numbers**, and what each part of the stack demonstrates
-  (`ARCHITECTURE.md` Appendix A).
-- `docs/adr/` complete and reconciled with what was actually built — every place
-  the implementation diverged from Phase 0 is stated.
-- `RESULTS.md` final pass: every number with its measurement conditions.
-- `docs/DEMO.md` + a recorded walkthrough (~3 min): place an order, watch it
-  flow, force a payment failure, watch compensation, kill the orchestrator
-  mid-saga, watch recovery, show the trace, show the invariant checker.
-- `docs/INTERVIEW.md`: ~20 questions this project must survive, answered —
-  *"why Saga and not 2PC here?"*, *"what does the outbox buy you and what does it
-  cost?"*, *"exactly-once — really?"*, *"what breaks first at 100× load?"*,
-  *"what would you do differently?"*
-- **`docs/LIMITATIONS.md`**: what this system does not do and what would break
-  in production. Written honestly.
-- **Optional stretch (ADR-6):** Apicurio Schema Registry + Avro on one topic. Cut
-  first if time runs short; cutting it is recorded in `CONTEXT.md`, not silent.
+- [x] Root `README.md`: rewritten in full — what it is, the architecture diagram
+      (mermaid), the 2PC↔Saga throughline, a verified local quickstart, deployment
+      summary, results table with real numbers, and what each part of the stack
+      demonstrates (`ARCHITECTURE.md` Appendix A).
+- [x] `docs/adr/` reconciled against what was actually built: ADR-1 (BUG-0049's
+      "single-writer rule" gap), ADR-3 (Atlas M0 never actually provisioned — the
+      executed path stayed containerized Mongo throughout), ADR-6 (the Avro
+      stretch cut, not built) all carry their own reconciliation notes.
+- [x] `RESULTS.md` final pass: an "at a glance" summary table added, cross-checked
+      against every phase's own detailed numbers for consistency.
+- [x] `docs/DEMO.md`: the full ~3-minute script with four real, captured
+      screenshots (`docs/demo-screenshots/`) against a live local stack, the
+      orchestrator-crash-recovery step re-verified live this session, and an
+      honest note on why no video file was produced (no screen-recording tool in
+      this environment — every step is a real, live capture regardless).
+- [x] `docs/INTERVIEW.md`: 20 questions answered with specifics (bug numbers,
+      measured results, file references), not generalities.
+- [x] `docs/LIMITATIONS.md` expanded from Phase 15's single entry to nine,
+      covering the `SagaReplyListener` bottleneck, outside-in blind spots, the
+      mock payment gateway, the cross-origin refresh-token gap, single-instance
+      datastores, the never-applied AWS path, demo-literal secrets, and this
+      machine's own Docker Desktop fragility.
+- [x] **Optional stretch (ADR-6) cut**, not built — reasoning in that ADR's own
+      reconciliation note and CONTEXT.md's Key Decisions Log, not silent.
 
 **Dependencies.** Phase 15.
 
 **Exit criteria.**
-- [ ] Every item in `CLAUDE.md` §8 (Definition of Done) is checked off with a
-      pointer to where it is evidenced.
-- [ ] A clean-machine run of the README quickstart works — verified by following
-      it literally, not from memory.
-- [ ] Demo recorded.
-- [ ] `BUGS.md` reconciled: every entry has a final status; open ones state what
-      is needed to close them.
-- [ ] `CONTEXT.md` reflects a completed project.
+- [x] Every item in `CLAUDE.md` §8 (Definition of Done) is checked off with a
+      pointer to where it is evidenced — table in `CONTEXT.md`.
+- [x] A clean-machine run of the README quickstart works — verified live this
+      session on a fresh `docker compose up -d --build`: all 9 containers
+      healthy, seed commands clean, `POST /orders` → `CONFIRMED` in ~3s, all 5
+      health endpoints `UP` — followed literally from the rewritten README, not
+      from memory.
+- [x] Demo recorded — as a real, captured screenshot sequence (`docs/DEMO.md`,
+      `docs/demo-screenshots/`), not a video file (no screen-recording tool
+      available in this environment; stated plainly in `docs/DEMO.md` rather
+      than silently substituted).
+- [x] `BUGS.md` reconciled: every entry has a final status — BUG-0007 and
+      BUG-0008 (previously ambiguous/stale) closed out with their actual
+      resolutions; four new bugs found and fixed live during this phase's own
+      demo/quickstart verification (BUG-0051 CORS, BUG-0052 stale status badge,
+      BUG-0053 verifier timeout + dataset-scale hang) plus BUG-0050 (Docker
+      Desktop instability, carried over from Phase 15 but never logged until now).
+- [x] `CONTEXT.md` reflects a completed project — Phase 16 marked complete
+      below, Definition of Done table added, Next Steps rewritten for
+      post-project maintenance rather than a next phase.
 
 ---
 

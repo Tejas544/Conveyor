@@ -1,13 +1,14 @@
-# Context — Last updated: 2026-09-12 (Phase 15 complete)
+# Context — Last updated: 2026-09-12 (Phase 16 complete — project complete)
 
 See `CLAUDE.md` §6 for the format policy: this file always reflects *current*
 state, overwritten in place, not appended forever. Keep it readable in under
 a minute.
 
 ## Current Phase
-**Phase 16 — Documentation, demo, and the interview defence (not started).**
-Phase 15 closed this session, human instruction to proceed ("Start Phase 15 —
-go ahead as planned").
+**None — all 16 phases complete.** Phase 16 closed this session, human
+instruction to proceed ("Start Phase 16 — go ahead as planned"). This is the
+last phase `PLAN.md` defines; see "Next Steps" below for what a future session
+would actually be picking up (maintenance/enhancement, not a numbered phase).
 
 ## Completed Phases
 - Phase 0 — Planning ✅ (2026-09-10). All six ADRs signed off; ADR-13 (zero-cost
@@ -611,8 +612,61 @@ go ahead as planned").
   criterion — local hygiene, not a cost concern, unlike Phase 13/14's choice to leave a cluster running
   for demo purposes.
 
+- Phase 16 — Documentation, demo, and the interview defence ✅ (2026-09-12, this session). Root
+  `README.md` rewritten in full (architecture diagram, the 2PC↔Saga throughline, a verified
+  quickstart, results table, "what each part demonstrates"). `docs/adr/` reconciled: ADR-1
+  (BUG-0049's "single-writer rule" gap), ADR-3 (Atlas M0 never actually provisioned — the executed
+  path stayed containerized Mongo throughout, both locally and in Phase 14's CI-deployed kind
+  cluster), ADR-6 (the Avro/Apicurio stretch cut, not built — see Key Decisions Log). `RESULTS.md`
+  gained an "at a glance" cross-phase summary table, cross-checked against every phase's own
+  numbers. New `docs/INTERVIEW.md` (20 Q&A) and `docs/DEMO.md` (the full ~3-minute script, four
+  real captured screenshots in `docs/demo-screenshots/`, the orchestrator-crash-recovery step
+  re-verified live). `docs/LIMITATIONS.md` expanded from Phase 15's one entry to nine.
+  <br>**Four more real bugs found and fixed live verifying the README quickstart and capturing the
+  demo** — none design-provoked, all found by literally doing the things the docs claim work:
+  **BUG-0051** (Phase 14's CORS default only ever listed the GitHub Pages origin, silently breaking
+  `npm run dev` against `docker compose`/kind for two full phases — fixed in `.env.example`,
+  `docker-compose.yml`, and `infra/helm/conveyor/values.yaml` alike), **BUG-0052** (the order-detail
+  page's header status badge was a one-time fetch on mount while the saga timeline below it
+  correctly live-updated via SSE — fixed by subscribing the header to the same stream), **BUG-0053**
+  (`conveyor-verifier`'s outside-in `RestClient`s had no configured timeout, *and* this machine's
+  long-lived, never-reset Postgres volume had accumulated 88,203 orders across this entire
+  project's testing history — together they made a live invariant-check hang; fixed the timeout
+  gap for real, resolved the dataset-scale trigger with a `down -v` + reseed, the same precedent
+  Phase 13's BUG-0036 already set). **BUG-0050** (Docker Desktop instability under heavy load) was
+  found live in Phase 15 but never given its own `BUGS.md` entry until this phase's reconciliation
+  pass caught the gap.
+  <br>`BUGS.md` fully reconciled: BUG-0007 and BUG-0008 (previously the only two entries without a
+  clean final status) closed out with their actual, already-known resolutions (the `D:` data-root
+  move) rather than left ambiguous.
+  <br>Full reactor `./mvnw verify` green after every fix: **186/186 tests across all 69 test
+  classes in all 9 modules, zero failures** (frontend `tsc -b` clean and all 4 Vitest suites green,
+  checked separately). Two Spotless formatting violations from this phase's own edits
+  (`conveyor-verifier`, `saga-orchestrator`) were caught by this same run and fixed before the
+  final green pass.
+  <br>The Apicurio/Avro stretch (ADR-6) was **cut**, not built — see Key Decisions Log.
+
+## Definition of Done (`CLAUDE.md` §8) — checked off with evidence, Phase 16
+
+| Item | Evidence |
+|---|---|
+| All services independently deployable, running together via docker-compose locally and via K8s manifests/Helm | `docker compose up -d --build` verified live this session (fresh clean-machine run, all 9 containers healthy, README's own quickstart followed literally). `infra/helm/conveyor` + `./scripts/kind-up.sh` verified live in Phases 13-15 (kind, not EKS — see the note below). |
+| Full happy-path order flow works end to end and is visible live on the dashboard | Verified live this session: `POST /orders` → `CONFIRMED` in ~3s via curl, and via the real dashboard UI (`docs/DEMO.md` steps 1-2, `docs/demo-screenshots/3-happy-path-confirmed.png`). |
+| At least one chaos scenario demonstrated (service killed mid-saga) with a measured compensation-correctness rate | Phase 11's 69-trial chaos matrix, **60/60 (100%) verified compensation-correctness among fairly-timed trials** (`RESULTS.md` Phase 11). Additionally re-demonstrated live this session (`docs/DEMO.md` step 4): `saga-orchestrator` killed mid-saga via `docker stop`, three orders genuinely stuck, all three correctly recovered/terminated once restarted, no data lost or duplicated. |
+| Load-test report: throughput and p99 latency under concurrent orders | Phase 12, `RESULTS.md` — knee at 120 VUs/~45.8 orders/s, p99 saga latency 3.08s (ramp)/6.67s (30-min soak), bottleneck named and trace-evidenced, regression at 160 VUs reported honestly. |
+| Inventory invariant checker running, zero violations — or documented violations with root cause | Phase 10 build; running continuously in every deployed shape (compose sidecar, kind CronJob). **Zero violations** in this session's own final live run (`docs/DEMO.md` step 6, exit 0). Every violation found across the whole project (Phase 15's BUG-0049 included) was root-caused and fixed, not hidden — full history in `BUGS.md`. |
+| Autoscaling behavior measured and recorded (pod count vs. load, scale-up latency) | Phase 15, `RESULTS.md` — both a CPU-HPA and a custom-metric HPA proven live on a real multi-node kind cluster, scale-up latency decomposed, scale-down latency measured and explained. |
+| CI/CD pipeline green end to end: build → test → containerize → push → deploy | Phase 14, verified live (run 34618678320, all 15 jobs green, including `deploy-to-kind` against a freshly-created kind cluster) — see `CONTEXT.md`'s Phase 14 record and `docs/DEPLOYMENT.md`. |
+| Root `README.md`: what this is, an architecture diagram, how to run it locally, how it's deployed, and what each part of the stack demonstrates | Rewritten in full this phase — architecture diagram (mermaid), the 2PC↔Saga throughline, verified local quickstart, deployment summary, a results table with real numbers, and the full "what each part demonstrates" table (`ARCHITECTURE.md` Appendix A, reproduced in `README.md`). |
+
+**One line item's own honest scope note:** the Definition of Done's phrasing names "EKS" for the
+K8s deployment target; this project's *executed* path is kind, by ADR-13's own deliberate,
+human-approved zero-cost pivot (Phase 0 addendum) — Terraform for a real EKS deployment is written
+and `plan`-validated in CI on every push but `terraform apply` has never run (grep-verified). This
+is the same scope this file has recorded since Phase 14, not a new gap found in Phase 16.
+
 ## In Progress
-- **Nothing mid-flight.** Phase 15 closed cleanly this session.
+- **Nothing.** Phase 16 closed cleanly this session — all 16 phases of `PLAN.md` are complete.
 
 ## Blockers
 - **None currently open.** BUG-0007 (disk space) is resolved via the data-root
@@ -653,35 +707,47 @@ go ahead as planned").
   alone doesn't fix it — don't assume it's always just the K8s control plane.
 
 ## Next Steps
-1. **Phase 16 — Documentation, demo, and the interview defence.** The last
-   phase. `README.md`, `docs/DEMO.md` + a recorded walkthrough, `docs/
-   INTERVIEW.md`, a final `docs/LIMITATIONS.md`/`BUGS.md`/`RESULTS.md` pass,
-   and `CLAUDE.md` §8's Definition of Done checked off item by item.
-2. `SagaReplyListener`'s listener `concurrency` is still Spring Kafka's default
-   of 1 — Phase 12 named and trace-evidenced this bottleneck, Phase 15's own
-   throughput-at-n-replicas result (RESULTS.md) is a second, independent piece
-   of evidence for the same root cause (saga-orchestrator's replica-count
-   scaling helps but doesn't eliminate it), and three phases in a row have now
-   deliberately left it unfixed rather than applying it speculatively
-   mid-rigor-phase. Phase 16 is documentation-only and won't touch it either —
-   worth naming in `docs/LIMITATIONS.md`/`docs/INTERVIEW.md` as a known,
-   evidenced, deliberately-deferred improvement rather than silently dropped.
-3. Consider revisiting `chaos/run_matrix.py`'s inter-repetition pacing for
-   the same injection point (BUG-0025's remaining, accepted limitation — see
-   RESULTS.md's "harness pacing limitation" note) if the chaos matrix is ever
-   re-run at higher repetition counts; not blocking, since every affected
-   trial was individually verified live to have converged correctly.
-4. Not done as part of Phase 8, still open: `saga.intervention` (an SSE event
-   name ARCHITECTURE.md §10.1 lists) has no real source —
-   `NEEDS_INTERVENTION` is reached via `SagaTimeoutSweeper`'s escalation,
-   which publishes no Kafka event today. `conveyor_saga_needs_intervention`
-   (Phase 9) at least gives it a Prometheus/Grafana/alert signal now; the
-   dashboard itself still has no live push for it, only
-   `GET /sagas?state=&stuck=true` polling.
-5. Unlike Phase 13/14, Phase 15's kind cluster **was** torn down at the end
-   (`kind delete cluster --name conveyor`) per its own exit criterion — a
-   future session needs `./scripts/kind-up.sh` again from scratch, not a
-   reused cluster.
+
+**The project is complete — all 16 `PLAN.md` phases done.** What follows is a punch list for a
+future session picking this back up for maintenance or genuine production-hardening, in the
+priority order `docs/INTERVIEW.md` question 18 and `docs/LIMITATIONS.md` already name:
+
+1. Raise `SagaReplyListener`'s Kafka listener `concurrency` above Spring's default of 1 — named
+   and trace-evidenced as the system's real throughput ceiling across three independent
+   measurements now (Phase 12's trace comparison, Phase 15's throughput-at-n-replicas regression,
+   and `docs/LIMITATIONS.md`'s own writeup), deliberately left unfixed the whole project so each
+   rigor phase's own measurement stayed uncontaminated. This is the single highest-value change a
+   future session could make, and it is a one-line config change.
+2. A real payment gateway integration, in place of `MockPaymentGateway` — see
+   `docs/LIMITATIONS.md`.
+3. HA for every datastore (Postgres replication, Kafka replication factor >1, Mongo beyond one
+   replica set) — none of this project's phases needed it; a real production deployment would.
+4. Real secrets management (Vault/KMS) in place of the committed `*_local_dev_only` literals.
+5. Resolve the refresh-token cross-origin gap for real (same-origin deployment, or real TLS +
+   `SameSite=None`) — currently the user just has to re-log in every 15 minutes cross-origin.
+6. Actually run the already-written, already-`plan`-validated Terraform against a real AWS account
+   (a real, billable action — named, time-boxed, explicit go-ahead required per `CLAUDE.md` §9) to
+   measure what this project's own `docs/LIMITATIONS.md` names as never-measured: node-level
+   cluster autoscaling and real cloud network/IAM/storage characteristics.
+7. Consider revisiting `chaos/run_matrix.py`'s inter-repetition pacing for the same injection point
+   (BUG-0025's remaining, accepted limitation) if the chaos matrix is ever re-run at higher
+   repetition counts; not blocking, since every affected trial was individually verified live to
+   have converged correctly.
+8. Not done as part of Phase 8, still open: `saga.intervention` (an SSE event name
+   ARCHITECTURE.md §10.1 lists) has no real source — `NEEDS_INTERVENTION` is reached via
+   `SagaTimeoutSweeper`'s escalation, which publishes no Kafka event today. The dashboard has no
+   live push for it, only `GET /sagas?state=&stuck=true` polling.
+9. This machine has no live kind cluster or docker-compose stack left running as of this session's
+   close — a future session needs `./scripts/kind-up.sh` or `docker compose up -d --build` again
+   from scratch (see "How to resume," below).
+
+## How to resume (for a future session with no memory of this one)
+
+1. Read this file top to bottom (5 minutes) — it is the fastest path to full context.
+2. `cp .env.example .env && docker compose up -d --build && make seed` (or the underlying commands
+   in `README.md` if `make` isn't installed) — reproduces the entire live system in one command.
+3. Everything else — architecture, decisions, results, known limitations, the bug ledger — is one
+   file away: `ARCHITECTURE.md`, `PLAN.md`, `RESULTS.md`, `docs/LIMITATIONS.md`, `BUGS.md`.
 
 ## Toolchain note (this machine)
 - Java **25 LTS** installed (not 21). No discrepancy with ADR-4: POMs compile
@@ -700,6 +766,14 @@ go ahead as planned").
 
 ## Key Decisions Log
 
+- **Phase 16 — the Apicurio/Avro stretch goal (ADR-6) is cut, not built.** PLAN.md itself named it
+  optional and explicitly cuttable. The 15 phases already complete deliver this project's actual
+  thesis in full (Saga/2PC, the outbox, the invariant checker, the chaos matrix, the load test, the
+  autoscaling measurement) without touching wire format at all, and the CI schema-compatibility gate
+  already in place (JSON Schema diffed against `main`) already demonstrates the same
+  backward-compatibility discipline a runtime registry would add operationally. Recorded per
+  `PLAN.md`'s own instruction that a cut stretch goal be stated, not silent — see `docs/adr/0006`'s
+  own reconciliation note for the full reasoning.
 - **Phase 15 — kind, not k3d, for the "multi-node k3d cluster" PLAN.md names.** ARCHITECTURE.md
   §15 itself treats kind/k3d as interchangeable throughout, and Phase 13's own `kind-config.yaml`
   comment had already anticipated exactly this call ("Phase 15 can swap the tool without changing

@@ -20,6 +20,115 @@ Format for each entry:
 
 ---
 
+## [BUG-0053] `conveyor-verifier`'s outside-in HTTP clients had no configured timeout, and a long-lived dev volume let 88,203 accumulated orders make the checker itself hang
+- **Date:** 2026-09-12
+- **Phase:** Phase 16 — Documentation, demo, and the interview defence (found live while capturing the invariant-checker demo step)
+- **Severity:** Medium (a real robustness gap in a CI-gating tool; the trigger this session was environmental, not a data-correctness defect)
+- **Symptom:** `make invariant-check` (`docker compose run --rm -e SPRING_PROFILES_ACTIVE=oneshot conveyor-verifier`) logged its inside-out result ("conveyor-verifier clean run: 15 invariants checked, 0 violations") and then never progressed — the container stayed `Up` for 4+ minutes with no further log line, no exit code, actively burning CPU, on a run started moments after this same session restarted `saga-orchestrator` (Phase 16's own "kill the orchestrator mid-saga" demo step).
+- **Root cause:** two separate things, found in this order:
+  1. `ServiceClients` (`conveyor-verifier`'s only outside-in HTTP source) built every `RestClient` with `RestClient.create(baseUrl)` — no configured connect or read timeout at all. A CI-gating tool whose entire job is to run reliably during exactly the kind of transient unavailability a crash-recovery scenario produces had no bound on how long a single unreachable service could hang it.
+  2. Once that was fixed and the hang *still* reproduced, the real proximate cause turned out to be environmental: this repo's `docker-compose.yml` Postgres volume had never been reset (`docker compose down -v`) across this entire project's history on this machine, and had accumulated **88,203 rows in `orders` alone** — the byproduct of Phase 11's chaos matrix and Phase 12's 66,457-order load/soak test, all sharing one long-lived named volume. `ServiceClients#getAllPages` walks every page of a paginated endpoint sequentially (by design — Phase 10 never needed to page through more than a few hundred rows); at 200 rows/page against a dataset two orders of magnitude larger than any prior phase exercised, one outside-in invariant's full sweep took long enough to look identical to a hang.
+- **Fix:** (1) `ServiceClients` now builds every `RestClient` with a shared `ClientHttpRequestFactory` carrying a bounded 5s connect/read timeout (`ClientHttpRequestFactorySettings`) — a real, kept fix, verified against the full `conveyor-verifier` suite (23/23 green) and worth keeping regardless of the dataset-size issue, since an actually-unreachable service should now fail this check fast instead of hanging it forever. (2) The oversized dataset itself was not a defect to fix in code — `docker compose down -v` + reseed (the same "wipe and recreate rather than hand-fix" precedent Phase 13's BUG-0036 already established) restored a representative dataset size; the one-shot check then completed in ~2s end to end, exit 0, 15/15 clean.
+- **Status:** Fixed (the timeout gap) and resolved by environment reset (the dataset-scale trigger). Re-verified live: a fresh `make invariant-check` against the clean, reseeded stack completes and exits promptly.
+
+---
+
+## [BUG-0052] The order-detail page's header status badge never updated live, only the timeline below it did
+- **Date:** 2026-09-12
+- **Phase:** Phase 16 — Documentation, demo, and the interview defence (found live capturing `docs/DEMO.md`'s own screenshots)
+- **Severity:** Low (cosmetic staleness only — no data was ever wrong, just not yet displayed; the kanban board's own live column-to-column movement, the actual Phase 8 demo centerpiece, was unaffected)
+- **Symptom:** A screenshot of a just-compensated order's detail page showed the saga timeline
+  fully rendered (`RESERVE_INVENTORY`→`CHARGE_PAYMENT` failed→`RELEASE_INVENTORY` compensation
+  succeeded, saga state `ABORTED`) while the page's own header badge still read "Inventory
+  Reserved" — an order the backend already reported as `CANCELLED` via the REST API at that exact
+  moment.
+- **Root cause:** `OrderDetailPage.tsx` fetched the order's status **once**, on mount
+  (`useEffect` with no re-fetch trigger), while `OrderTimeline` — a separate component below it —
+  independently subscribes to the live SSE stream (`useSagaStream`) and correctly refetches the
+  saga on every event. Two different update strategies on the same page meant they could
+  legitimately disagree for as long as the visitor stayed on a page whose order kept moving after
+  load.
+- **Fix:** `OrderDetailPage` now also subscribes to `useSagaStream` (the same hook, same pattern
+  `OrderTimeline` already uses, scoped to the same `orderId`) and refetches the order whenever an
+  event arrives — the same live-update guarantee the timeline already had, one level up. Costs one
+  extra SSE connection per order-detail page view, the same per-connection read-amplification
+  tradeoff ADR-10 already names and accepts for the kanban board.
+- **Status:** Fixed. `tsc -b` clean, all 4 frontend Vitest suites still green; visually confirmed
+  the header badge now matches the backend's real-time status on both a cold load and immediately
+  after a live compensation.
+
+---
+
+## [BUG-0051] Phase 14's CORS default silently broke `npm run dev` against `docker compose`/kind, undiscovered for two phases
+- **Date:** 2026-09-12
+- **Phase:** Phase 16 — Documentation, demo, and the interview defence (found live verifying README's own quickstart against a fresh, clean stack)
+- **Severity:** Medium (a real, previously-shipped regression — not merely a doc gap — but with an easy fix and no data-integrity impact)
+- **Symptom:** Logging in from the frontend's own `npm run dev` (Vite on `http://localhost:5173`,
+  proxied to `docker-compose.yml`'s published ports per `vite.config.ts`) against a freshly-built,
+  fully healthy `docker compose up` stack failed with "Invalid username or password" in the UI —
+  misleading, since the same credentials worked immediately via a direct `curl` to
+  `POST /api/v1/auth/login`. The browser's own network tab showed the real status: `403 Forbidden`,
+  body `"Invalid CORS request"` — Spring Security's `CorsFilter` rejecting the request outright, not
+  a credentials mismatch at all.
+- **Root cause:** Phase 14 added `CONVEYOR_SECURITY_CORS_ALLOWED_ORIGINS` (`conveyor-common`'s
+  `CorsProperties`/`SecurityAutoConfiguration`) to let the GitHub Pages–hosted dashboard call this
+  stack cross-origin — but `.env.example` (and `docker-compose.yml`'s own bare fallback, and
+  `infra/helm/conveyor/values.yaml`'s equivalent for kind) defaulted it to **only**
+  `https://tejas544.github.io`. `npm run dev`'s origin (`http://localhost:5173`) was never in that
+  list, so every local frontend-dev session against either `docker compose` or kind has been unable
+  to authenticate since Phase 14 landed — two full phases (14 and 15) passed without this being
+  caught, because neither phase's own testing exercised this specific pairing (Phase 14 tested
+  Pages↔kind; Phase 15 never touched the frontend at all).
+- **Fix:** `http://localhost:5173` added alongside the Pages origin in all three places that
+  default this value (`.env.example`, `docker-compose.yml`'s fallback, `infra/helm/conveyor/
+  values.yaml`'s `corsAllowedOrigins`) — both origins now work with zero extra configuration,
+  matching each file's own existing "demoable/reachable with no setup" standard.
+- **Status:** Fixed and verified live: after the env change and an app-tier container recreate,
+  the identical login that previously 403'd succeeded from the actual Vite dev server, and the
+  dashboard rendered the live kanban board with real order data.
+
+---
+
+## [BUG-0050] Docker Desktop itself (not just the kind cluster) became unresponsive under sustained heavy replica-fan-out load, and kind's own host-port publishing separately broke
+- **Date:** 2026-09-12
+- **Phase:** Phase 15 — Autoscaling measurement (found live while pushing both HPAs toward their originally-planned ceilings)
+- **Severity:** High (blocked live measurement repeatedly; not a defect in Conveyor's own code)
+- **Symptom:** Three distinct failures across one session, all traced to the host rather than the
+  application: (1) `kubectl`/`docker` commands started returning `net/http: TLS handshake timeout`
+  and the Docker Engine API itself returned `500 Internal Server Error` while `saga-orchestrator`'s
+  HPA was fanning out to 6 replicas simultaneously with `order-service`'s own 5; (2) even a plain
+  `docker ps` timed out past 30s during the same window; (3) after recreating the cluster to clear
+  that, every kind NodePort (8081-8085) timed out from the host even though the pods themselves were
+  healthy and reachable from *inside* the cluster — `docker port` showed the mapping existed, but
+  nothing arrived through it.
+- **Root cause:** (1) and (2) are the same underlying pattern already on record in CONTEXT.md's
+  "kind's own resource overhead" note (Phase 13) and BUG-0002/0008's own history — this specific
+  Windows/Docker-Desktop/WSL2 host becomes measurably less responsive under sustained heavy
+  container churn (here: up to 11 concurrently-bursting/CPU-limited JVMs plus repeated crash-loop
+  restarts from BUG-0047, before that fix landed) — never fully root-caused, consistent with every
+  prior occurrence of this host's Docker Desktop instability. (3) is a distinct, separate failure in
+  Docker Desktop's own host-to-container port-forwarding layer (not a kind or Kubernetes
+  NetworkPolicy issue — Calico wasn't even involved, since traffic never got past the host boundary)
+  that a cluster recreation alone did not clear, but an actual Docker Desktop restart (`wsl
+  --shutdown` + relaunch) did.
+- **Fix:** none applied to the host's own instability directly — same posture as BUG-0002/0007/0008
+  before it: this is host state, not something to unilaterally repair mid-session. What *was* done:
+  recreated the kind cluster for (1)/(2), and performed an actual Docker Desktop restart for (3),
+  both of which the human had already authorized (this session's own `AskUserQuestion` exchange).
+  The load profile and HPA ceilings were also right-sized afterward (`saga-orchestrator` capped at
+  3 replicas, not 6) so the *measurement itself* stopped depending on pushing this specific host to
+  the exact edge that triggered (1)/(2) in the first place — see RESULTS.md's Phase 15 section and
+  `values.yaml`'s own comment.
+- **Status:** Won't Fix (host-level, same class as BUG-0002/0007/0008 — genuinely this machine's own
+  Docker Desktop/WSL2 characteristic under sustained heavy load, not a Conveyor defect). Worked
+  around live via cluster recreation + one Docker Desktop restart, both of which resolved their
+  respective symptoms fully; the measurement's own scope was right-sized to avoid depending on
+  re-triggering it. Recorded here, distinctly from BUG-0007/0008, because the triggering condition
+  (sustained CPU-limited replica fan-out) and one of the three symptoms (broken host-port publishing)
+  are new and worth a future session recognizing quickly rather than re-diagnosing from scratch.
+
+---
+
 ## [BUG-0049] A late Kafka reply racing a concurrent timeout-sweep transaction could silently clobber an ABORTED saga back to COMPLETED — "money moved, nobody told," reached a new way
 - **Date:** 2026-09-12
 - **Phase:** Phase 15 — Autoscaling measurement (found live by `conveyor-verifier`'s own inside-out check, run during the confirmation load test)
@@ -1050,7 +1159,9 @@ Format for each entry:
   (concurrency, idempotency, contract, and the ADMIN-auth tests) is **unverified this session**, as is
   `docker compose up` with the new services' images. Per CLAUDE.md §2.5 ("no fake done"), neither
   phase is being marked complete in `CONTEXT.md` until this is confirmed running.
-- **Status:** Partially resolved, still Open. Docker recovered mid-session (`docker ps` started
+- **Status:** Fixed — see the closing update at the end of this entry (Phase 16) for the durable fix
+  and why it's no longer open. Left as originally written below for the full incident history.
+- **(Historical, at the time of Phase 4/5):** Docker recovered mid-session (`docker ps` started
   responding again without any explicit fix from here — the human likely restarted it), which let
   `./mvnw verify` finally run for the full reactor: **all 7 modules green**, including every Phase
   4 and Phase 5 test (see CONTEXT.md). `docker compose up -d --build` was then attempted and got
@@ -1218,6 +1329,19 @@ Format for each entry:
   of `C:` entirely, which would remove this class of failure structurally rather than requiring
   repeated manual cleanup. Then restart Docker Desktop, confirm `docker ps`/`docker system df`
   respond, and re-run `mvn -f e2e/pom.xml verify -DskipE2E=false`.
+- **Closing update (Phase 16, 2026-09-12):** option (b) is what actually happened — the human moved
+  Docker Desktop's data root off `C:` onto `D:` before Phase 7's own live `e2e` run finally closed
+  that session (see BUG-0007's own closing update). Every phase since (7 through 15 — dozens of
+  `docker compose up`/`kind` sessions, including Phase 12's load tests and Phase 13-15's kind
+  clusters) ran without a single recurrence of *this specific disk-space-driven* failure mode,
+  confirming the data-root move as the durable fix rather than a lucky session. Marking **Fixed**
+  rather than leaving this open indefinitely on a root cause (whatever was filling `C:`) that was
+  never diagnosed and, once the data root moved, stopped mattering. **Not the same issue as** the
+  Docker Desktop instability Phase 15 hit under sustained heavy replica-fan-out load (BUG-0050,
+  below) — that one is load-induced with the data root already on `D:`, a different mechanism than
+  this entry's disk-space cascade, logged separately rather than folded in here.
+- **Status:** Fixed (Phase 7, via the `D:` data-root move; independently unrecurring — of this
+  specific failure mode — through Phase 15).
 
 ## [BUG-0007] Host C: drive full — `docker compose up --build` fails, blocking Phase 3's live health check
 - **Date:** 2026-09-10
@@ -1237,16 +1361,19 @@ Format for each entry:
   live compose stack was still verified this phase: the full reactor `./mvnw verify` (all 7
   modules, real Testcontainers Postgres/Redpanda/Mongo per test class) passed clean immediately
   before the disk filled.
-- **Status:** Open — blocked on the human freeing disk space on `C:`. Unblocks when: `docker
-  compose up -d --build` succeeds and all 8 containers/5 health endpoints are re-verified `UP`
-  (same check as BUG-0002/BUG-0004's resolutions).
-- **Update (2026-09-10, Phase 7 session):** recurred. `C:` was at ~5.7 GB free per BUG-0002's
-  resolution note; `df -h` this session showed it back to 226 GB / 226 GB used, 0 bytes free —
-  someone/something filled it again in the interim, still not Conveyor's own Docker state (this
-  project's images/volumes don't come close to 226 GB). This is what actually produced BUG-0008's
-  "input/output error" symptoms this session (see that entry's latest update) — not fresh Docker
-  Desktop/WSL2 corruption as first suspected, a full disk read that way instead. Still open, same
-  fix needed: free space on `C:`, or move Docker Desktop's data root to `D:` (160 GB free).
+- **Status:** Fixed (Phase 7, 2026-09-10). Root cause was never Conveyor's own Docker state (its
+  images/volumes never came close to filling a 226 GB drive) and recurred twice, so a durable fix
+  meant not depending on `C:` staying clear — the human moved Docker Desktop's entire data root off
+  `C:` onto `D:` (160 GB free at the time), which is what actually unblocked every phase since. Every
+  later phase's `docker compose up`/`kind` work (Phases 7 through 15) ran without a recurrence,
+  confirming the move as the durable resolution rather than a one-off cleanup. See CONTEXT.md's
+  Blockers section (present since Phase 7) for the durable-vs-cleanup framing.
+- **Update (2026-09-10, Phase 7 session):** recurred once before the data-root move landed. `C:` was
+  at ~5.7 GB free per BUG-0002's resolution note; `df -h` this session showed it back to 226 GB /
+  226 GB used, 0 bytes free — someone/something filled it again in the interim. This is what
+  actually produced BUG-0008's "input/output error" symptoms this session (see that entry's latest
+  update) — not fresh Docker Desktop/WSL2 corruption as first suspected, a full disk read that way
+  instead.
 
 ---
 
