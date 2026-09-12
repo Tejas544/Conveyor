@@ -401,7 +401,7 @@ Kubernetes (kind/k3d)**, not AWS EKS. Specifically:
 | Frontend hosting | **Vercel / Cloudflare Pages / GitHub Pages** (free indefinitely, no 12-month expiry to track) | S3 + CloudFront |
 | Relational DB | Containerized Postgres (same image used in local dev) | AWS RDS |
 | Kafka | Strimzi on kind (unchanged from §15.1) | AWS MSK — already rejected on cost |
-| Document DB | **Atlas M0 stays** — it is already free indefinitely and is the one genuinely-hosted, genuinely-cloud component in the stack | — |
+| Document DB | Containerized `mongo` image, same as local dev — **not** Atlas M0. *(Reconciled Phase 16: this row's plan was Atlas M0, kept because it's already free — but the executed deployment path, Phase 14's kind-in-CI target, is itself local/ephemeral, so it never had occasion to reach for a persistent managed Mongo instance. `docs/adr/0003`'s own reconciliation note has the full detail.)* | — |
 | IaC (Terraform for VPC/EKS/RDS/ECR) | **Written and validated** (`terraform validate`, `terraform plan` in CI against a sandbox) but **never `apply`'d** | A real, billed AWS deployment |
 
 **Reasoning.** The human's instruction was explicit and unambiguous: stick to
@@ -1326,4 +1326,4 @@ this project should be able to defend under questioning.
 | SSE fan-out with per-replica consumer groups | Real-time UX under horizontal scaling; the EdgeRAG callback |
 | Polyglot persistence inside Inventory Service | Choosing a datastore by data shape, not by résumé coverage |
 | Trace propagation through Kafka headers | One order = one trace across five services |
-| Time-boxed EKS + teardown script | Cost discipline as an engineering property |
+| Terraform written/`plan`-validated but never `apply`'d, $0 kind/GHCR/Pages path executed instead (ADR-13) | Cost discipline as an engineering property — taken further than "time-boxed," to "never spent at all" |
