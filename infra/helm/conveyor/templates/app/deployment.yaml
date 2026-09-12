@@ -27,6 +27,14 @@ spec:
       labels:
         app.kubernetes.io/name: {{ $svcName }}
         {{- include "conveyor.labels" $root | nindent 8 }}
+      annotations:
+        # Phase 15: scrape target for infra/k8s/prometheus's kubernetes_sd_configs (role: pod) —
+        # feeds prometheus-adapter's conveyor_saga_active rule for saga-orchestrator's custom-metric
+        # HPA. Every service carries it (cheap, and useful for the same scaling instrumentation on
+        # order-service too), not just saga-orchestrator.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ $svc.port }}"
+        prometheus.io/path: "/actuator/prometheus"
     spec:
       securityContext:
         fsGroup: 1000

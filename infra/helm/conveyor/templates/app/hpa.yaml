@@ -1,9 +1,11 @@
-# PLAN.md Phase 13: "HPA dry run on kind — the Phase 15 method rehearsed locally." Only
-# order-service gets a real HPA here (CPU — the metric that needs nothing beyond metrics-server,
-# already installed by scripts/kind-up.sh). saga-orchestrator's custom-metric HPA
-# (conveyor_saga_active via prometheus-adapter) is deliberately left disabled in values.yaml — it
-# needs an in-cluster Prometheus this phase doesn't deploy — and is Phase 15's own deliverable, not
-# rehearsed here under the wrong metric as a stand-in.
+# PLAN.md Phase 13/15: order-service gets a CPU HPA (the metric that needs nothing beyond
+# metrics-server, already installed by scripts/kind-up.sh). saga-orchestrator gets a custom-metric
+# HPA on conveyor_saga_active (Phase 6/9's own gauge) via prometheus-adapter's external.metrics.k8s.io
+# API (infra/k8s/prometheus/adapter-values.yaml) — deliberately a second, different kind of metric
+# from order-service's CPU one, per PLAN.md Phase 15's own goal: "one infrastructure-metric and one
+# application-metric autoscaler, because they behave differently and the difference is worth
+# showing." `$svc.hpa.metric` selects which `metrics:` entry this HPA gets; default is `cpu` so
+# order-service's block (and any future CPU-scaled service) needs no values.yaml change.
 {{- $root := . -}}
 {{- range $svcName, $svc := .Values.services }}
 {{- if and $svc.hpa $svc.hpa.enabled }}
@@ -23,12 +25,22 @@ spec:
   minReplicas: {{ $svc.hpa.minReplicas }}
   maxReplicas: {{ $svc.hpa.maxReplicas }}
   metrics:
+    {{- if eq ($svc.hpa.metric | default "cpu") "external" }}
+    - type: External
+      external:
+        metric:
+          name: {{ $svc.hpa.externalMetricName }}
+        target:
+          type: Value
+          value: {{ $svc.hpa.targetValue }}
+    {{- else }}
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
           averageUtilization: {{ $svc.hpa.targetCPUUtilizationPercentage }}
+    {{- end }}
 ---
 {{- end }}
 {{- end }}

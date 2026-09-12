@@ -1,0 +1,27 @@
+# Phase 15: prometheus-adapter, pointed at infra/k8s/prometheus's in-cluster instance, exposing
+# saga-orchestrator's conveyor_saga_active gauge (Phase 6/9) on the external.metrics.k8s.io API so
+# an HPA can scale on it. `resources.namespaced: false` because conveyor_saga_active carries no
+# per-namespace label (this Prometheus only ever scrapes the conveyor namespace to begin with, so
+# there is nothing to disambiguate) — see kubernetes-sigs/prometheus-adapter's own
+# docs/externalmetrics.md for why that flag exists. `max(...)`, not `sum(...)`, in the
+# metricsQuery: every saga-orchestrator replica reports the *same* global count (it queries the one
+# shared Postgres, not a per-replica in-memory value), so summing across replicas would silently
+# multiply the reported value by replica count — the opposite of a stable scaling signal.
+prometheus:
+  url: http://conveyor-prometheus.conveyor.svc.cluster.local
+  port: 9090
+  path: ""
+
+rules:
+  default: false
+  external:
+    - seriesQuery: 'conveyor_saga_active{application="saga-orchestrator"}'
+      resources:
+        namespaced: false
+      metricsQuery: 'max(<<.Series>>{<<.LabelMatchers>>})'
+      name:
+        as: "conveyor_saga_active"
+
+resources:
+  requests: {cpu: 50m, memory: 128Mi}
+  limits: {cpu: 250m, memory: 256Mi}

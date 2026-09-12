@@ -180,11 +180,26 @@ services:
       requests: {cpu: 200m, memory: 384Mi}
       limits: {cpu: 1000m, memory: 640Mi}
     hpa:
-      # Phase 15 raises this to a custom-metric HPA on conveyor_saga_active via prometheus-adapter
-      # (ARCHITECTURE.md §15, PLAN.md Phase 15) — not available yet without an in-cluster Prometheus
-      # (out of Phase 13's scope, see tracing note above). Left disabled here rather than wired to
-      # CPU as a stand-in, so Phase 15 isn't silently "already done" under the wrong metric.
-      enabled: false
+      # Phase 15: a custom-metric HPA on conveyor_saga_active (Phase 6/9's own gauge — count of
+      # non-terminal saga_instances rows) via prometheus-adapter's external.metrics.k8s.io API
+      # (infra/k8s/prometheus/adapter-values.yaml) — deliberately not CPU, which Phase 12 already
+      # measured this service peaking at only 7.9%; the real pressure point Phase 12 found is
+      # `SagaReplyListener`'s single-threaded consumption of conveyor.saga.replies.v1 (concurrency=1,
+      # never set explicitly). The reply topic's own partition count (6, infra/k8s/kafka/
+      # kafka-topics.yaml) is the *theoretical* ceiling — a 7th replica would sit permanently idle
+      # with no partition to own — but maxReplicas is capped at 3 here, below that, because this
+      # phase found live (BUG-0047, RESULTS.md) that this specific 12-core dev host cannot sustain
+      # 6 saga-orchestrator replicas concurrently with order-service's own 5-replica ceiling: enough
+      # simultaneously-bursting JVMs made metrics-server itself intermittently unavailable and
+      # starved new replicas of the CPU they needed to finish starting at all. 3 is the practical,
+      # measured ceiling on this hardware, named as such rather than silently substituted for the
+      # theoretical one of 6.
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 3
+      metric: external
+      externalMetricName: conveyor_saga_active
+      targetValue: 10
   dispatch-service:
     port: 8085
     db: dispatch

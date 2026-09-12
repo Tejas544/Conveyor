@@ -1,0 +1,34 @@
+# Phase 15: a minimal in-cluster Prometheus, scoped to the `conveyor` namespace only (least
+# privilege — this instance exists purely to feed prometheus-adapter's custom/external metrics API
+# for the saga-orchestrator HPA, not as a general observability platform; that job stays
+# docker-compose's `--profile observability` stack, per ARCHITECTURE.md §11). Role/RoleBinding
+# instead of a cluster-scoped ClusterRole, since kubernetes_sd_configs below is itself namespaced.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: conveyor-prometheus
+  namespace: conveyor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: conveyor-prometheus
+  namespace: conveyor
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: conveyor-prometheus
+  namespace: conveyor
+subjects:
+  - kind: ServiceAccount
+    name: conveyor-prometheus
+    namespace: conveyor
+roleRef:
+  kind: Role
+  name: conveyor-prometheus
+  apiGroup: rbac.authorization.k8s.io

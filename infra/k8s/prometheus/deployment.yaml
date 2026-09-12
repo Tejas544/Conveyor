@@ -1,0 +1,57 @@
+# Phase 15: not the docker-compose observability profile's Prometheus (that one has no path into
+# a kind cluster) — a second, minimal instance whose only job is to be prometheus-adapter's data
+# source for the saga-orchestrator custom-metric HPA. No PVC (measurement, not a dashboard history
+# worth persisting), no resource ambition beyond kind's own scale.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conveyor-prometheus
+  namespace: conveyor
+  labels:
+    app.kubernetes.io/name: conveyor-prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: conveyor-prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: conveyor-prometheus
+    spec:
+      serviceAccountName: conveyor-prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.0.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.retention.time=6h
+            - --web.enable-lifecycle
+          ports:
+            - name: http
+              containerPort: 9090
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: conveyor-prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: conveyor-prometheus
+  namespace: conveyor
+  labels:
+    app.kubernetes.io/name: conveyor-prometheus
+spec:
+  selector:
+    app.kubernetes.io/name: conveyor-prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
