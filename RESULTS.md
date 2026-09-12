@@ -3,6 +3,23 @@
 Per `CLAUDE.md` §1/§2.12: chaos/load/autoscaling results, recorded as each rigor test is run.
 This file grows one section per phase (10, 11, 12, 15) — never rewritten, only appended to.
 
+## At a glance (Phase 16 final pass)
+
+Every number below states its own measurement conditions in its own section — this table is a
+locator, not a substitute for reading them.
+
+| Phase | Headline result | Section |
+|---|---|---|
+| 10 — Invariant checker | 15/15 invariants soundness-proven via negative controls; 500/500 clean lifecycles, zero false positives; 12/15 observable outside-in (3 structurally cannot be) | [Phase 10](#phase-10--conveyor-verifier-the-invariant-checker-2026-09-11) |
+| 11 — Chaos matrix | 69 trials across 7 injection points × {crash, delay}; **true verified compensation-correctness: 60/60 (100%)** among fairly-timed trials; 2 real application bugs found and fixed (BUG-0026, BUG-0027) | [Phase 11](#phase-11--chaos-matrix-2026-09-11) |
+| 12 — Load test | Knee at **120 VUs / ~45.8 orders/s**; bottleneck named and trace-evidenced (`SagaReplyListener` concurrency=1); 30-min soak at the knee: 66,457 orders, 100% confirmed, zero invariant violations; honest regression reported at 160 VUs (−9% throughput, +92% p99) | [Phase 12](#phase-12--load-test-2026-09-11) |
+| 15 — Autoscaling | Both HPAs (CPU + custom-metric) scale up and back down live on a real multi-node kind cluster; scale-up latency decomposed; 1 real concurrency bug found and fixed live (BUG-0049); node-level autoscaling named as out of scope, not measured | [Phase 15](#phase-15--autoscaling-measurement-2026-09-12) |
+
+**Bugs found by rigor-phase measurement, not by code review** (the actual argument for running
+these phases at all): BUG-0021, BUG-0026, BUG-0027, BUG-0028, BUG-0029, BUG-0036, BUG-0044,
+BUG-0045, BUG-0047, BUG-0049 — ten real defects across four phases, none of which a green
+`./mvnw verify` alone would ever have surfaced. Full root-cause detail for every one in `BUGS.md`.
+
 ---
 
 ## Phase 10 — `conveyor-verifier`: the invariant checker (2026-09-11)
