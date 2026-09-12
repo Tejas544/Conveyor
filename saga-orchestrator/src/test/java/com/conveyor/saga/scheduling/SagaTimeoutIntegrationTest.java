@@ -15,11 +15,19 @@ import com.conveyor.saga.service.SagaOrchestrationService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * PLAN.md Phase 6: "Inventory never replies" / "Release keeps failing" are simulated by never
@@ -34,6 +42,7 @@ class SagaTimeoutIntegrationTest extends AbstractIntegrationTest {
   @Autowired private SagaTimeoutSweeper sweeper;
   @Autowired private OutboxRecordRepository outboxRecordRepository;
   @Autowired private ObjectMapper objectMapper;
+  @Autowired private PlatformTransactionManager transactionManager;
 
   @Test
   void forwardTimeoutWhileReservingInventoryAbortsTheSaga() {
@@ -123,6 +132,100 @@ class SagaTimeoutIntegrationTest extends AbstractIntegrationTest {
     OutboxRecord release = onlyRecordFor(orderId, "ReleaseInventory");
     JsonNode payload = objectMapper.valueToTree(release.getPayload()).get("payload");
     assertThat(payload.get("reservationIds").get(0).asText()).isEqualTo(reservationId.toString());
+  }
+
+  /**
+   * BUG-0049, found live via Phase 15's own load test — a genuinely concurrent race, not the
+   * sequential "reply arrives after the sweep already committed" case the two tests above cover.
+   * {@link SagaTimeoutSweeper#sweepOnce()} claims the row with {@code SELECT ... FOR UPDATE} and
+   * holds that lock for the whole {@code applyTimeoutPolicy} transaction; before this fix, a
+   * concurrently-running reply handler read the saga via a plain, unlocked {@code findByOrderId}
+   * and could see the pre-timeout {@code RESERVING_INVENTORY} state under Postgres's MVCC even
+   * while the sweep's transaction was still open, decide the saga was healthy, and — once its own
+   * write finally went through after the sweep committed — silently clobber the sweep's {@code
+   * ABORTED} transition and drive the saga all the way to {@code COMPLETED}: order confirmed and
+   * charged for real, while {@code orders.status} (updated directly by the sweep's own {@code
+   * OrderCancelled}) stayed {@code CANCELLED} forever. Reproduced here by holding the sweep's
+   * transaction open on a latch until the reply handler has had a chance to attempt its own read,
+   * proving the reply handler blocks instead of reading stale data.
+   */
+  @Test
+  void lateInventoryReservedRacingAConcurrentTimeoutSweepNeverClobbersTheAbort() throws Exception {
+    UUID orderId = startSaga();
+    backdateDeadline(orderId);
+
+    CountDownLatch sweepHoldingLock = new CountDownLatch(1);
+    TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+    UUID reservationId = UUID.randomUUID();
+    // A fixed hold, not a signal from the reply thread: the whole point is that an *unlocked* read
+    // never blocks at all, so any signal fired from inside the reply thread's own call would race
+    // arbitrarily against how far that call has actually gotten — proving nothing either way. A
+    // hold long enough for a same-JVM, same-DB call to comfortably complete end-to-end is what
+    // actually forces the read to land while this transaction is still open.
+    Duration sweepHoldDuration = Duration.ofMillis(1500);
+
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<?> sweepFuture =
+          executor.submit(
+              () ->
+                  transactionTemplate.executeWithoutResult(
+                      status -> {
+                        // The real production lock: sweepOnce()'s own SELECT ... FOR UPDATE claim
+                        // query, not a direct applyTimeoutPolicy call — this transaction must hold
+                        // the exact same row lock the real sweeper takes for this test to prove
+                        // anything about the real race.
+                        int claimed = sweeper.sweepOnce();
+                        assertThat(claimed).isEqualTo(1);
+                        sweepHoldingLock.countDown();
+                        // Hold the row lock open well past when the reply handler will have
+                        // attempted its own read — if that read were unlocked, it would race in
+                        // right here, during this window, exactly as it did live under Phase 15's
+                        // real load.
+                        sleepUninterruptibly(sweepHoldDuration);
+                      }));
+
+      sweepHoldingLock.await(5, TimeUnit.SECONDS);
+      Future<?> replyFuture =
+          executor.submit(
+              () ->
+                  orchestrationService.handleInventoryReserved(
+                      UUID.randomUUID(),
+                      orderId,
+                      List.of(reservationId),
+                      List.of(new InventoryItemPayload("SKU-1", 2))));
+
+      sweepFuture.get(10, TimeUnit.SECONDS);
+      replyFuture.get(10, TimeUnit.SECONDS);
+    } finally {
+      executor.shutdownNow();
+    }
+
+    SagaInstance saga = sagaInstanceRepository.findByOrderId(orderId).orElseThrow();
+    assertThat(saga.getState())
+        .as("the sweep's abort must win — the late reply must never resurrect the saga")
+        .isEqualTo(SagaState.ABORTED);
+
+    OutboxRecord release = onlyRecordFor(orderId, "ReleaseInventory");
+    JsonNode payload = objectMapper.valueToTree(release.getPayload()).get("payload");
+    assertThat(payload.get("reservationIds").get(0).asText()).isEqualTo(reservationId.toString());
+
+    long chargeCommands =
+        outboxRecordRepository.findAll().stream()
+            .filter(
+                r ->
+                    r.getAggregateId().equals(orderId.toString())
+                        && r.getEventType().equals("ChargePayment"))
+            .count();
+    assertThat(chargeCommands).as("the happy path must never have been resumed").isEqualTo(0);
+  }
+
+  private static void sleepUninterruptibly(Duration duration) {
+    try {
+      Thread.sleep(duration.toMillis());
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   /**

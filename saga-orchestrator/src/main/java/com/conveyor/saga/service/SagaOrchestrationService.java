@@ -727,9 +727,15 @@ public class SagaOrchestrationService {
 
   // ---------------------------------------------------------------- helpers
 
+  /**
+   * BUG-0049 (Phase 15): every caller here is a Kafka reply handler, each of which must block
+   * against a concurrently in-flight {@link com.conveyor.saga.scheduling.SagaTimeoutSweeper}
+   * transaction on this exact saga rather than read a stale pre-timeout state — see {@link
+   * com.conveyor.saga.repository.SagaInstanceRepository#findByOrderIdForUpdate}'s own Javadoc.
+   */
   private SagaInstance requireSaga(UUID orderId) {
     return sagaInstanceRepository
-        .findByOrderId(orderId)
+        .findByOrderIdForUpdate(orderId)
         .orElseThrow(() -> SagaNotFoundException.forOrderId(orderId));
   }
 
